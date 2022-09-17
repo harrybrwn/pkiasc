@@ -1,5 +1,9 @@
 store = "./testdata/store"
-keysize = add(2048, 2048)
+keysize = 1024
+
+var "country" {
+	default = "United States"
+}
 
 certificate "ca" {
 	ca = true
@@ -7,8 +11,9 @@ certificate "ca" {
 	serial_number = serial()
 	subject {
 		common_name = title("testing root CA")
-		organization = title("harry brown")
+		organization = title(join(" ", [env.USER, "certificates", "inc."]))
 		organizational_unit = env.USER
+		country = var.country
 	}
 	key_usage = [
 		key_usage.digital_signatures,

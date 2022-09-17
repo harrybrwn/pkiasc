@@ -9,6 +9,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/gohcl"
 	"github.com/hashicorp/hcl/v2/hclparse"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -29,10 +30,9 @@ var (
 )
 
 type config struct {
-	Store   string `json:"store" yaml:"store" hcl:"store"`
-	KeySize uint64 `json:"keysize" yaml:"keysize" hcl:"keysize"`
-	// Roots        []Certificate `json:"roots" yaml:"roots" hcl:"roots"`
-	Certificates []Certificate `json:"certificates" yaml:"certificates" hcl:"certificate,block"`
+	Store        string        `json:"store" hcl:"store"`
+	KeySize      uint64        `json:"keysize" hcl:"keysize"`
+	Certificates []Certificate `json:"certificates" hcl:"certificate,block"`
 }
 
 type variable struct {
@@ -59,11 +59,19 @@ func ParseConfig(c *config, content []byte, filename string) hcl.Diagnostics {
 	var (
 		// Holds intermediate certificate runtime state used for variables
 		certificate    = make(map[string]cty.Value)
+		vars           = make(map[string]cty.Value)
 		bodyContent, _ = f.Body.Content(&ConfigSchema)
 	)
 
-	for _, attr := range bodyContent.Attributes {
-		eval.Variables[attr.Name], diags = attr.Expr.Value(&eval)
+	if attr, ok := bodyContent.Attributes["keysize"]; ok {
+		diags = gohcl.DecodeExpression(attr.Expr, &eval, &c.KeySize)
+		if diags.HasErrors() {
+			return diags
+		}
+	}
+
+	if attr, ok := bodyContent.Attributes["store"]; ok {
+		diags = gohcl.DecodeExpression(attr.Expr, &eval, &c.Store)
 		if diags.HasErrors() {
 			return diags
 		}
@@ -73,25 +81,40 @@ func ParseConfig(c *config, content []byte, filename string) hcl.Diagnostics {
 		switch blk.Type {
 		case "var":
 			name := blk.Labels[0]
-			fmt.Println(name)
+			if !hclsyntax.ValidIdentifier(name) {
+				return hcl.Diagnostics{{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid variable name",
+					Subject:  &blk.LabelRanges[0],
+				}}
+			}
+			v := variable{Name: name}
+			diags = gohcl.DecodeBody(blk.Body, eval.NewChild(), &v)
+			if diags.HasErrors() {
+				return diags
+			}
+			if v.Value != nil {
+				vars[name], diags = v.Value.Expr.Value(&eval)
+				if diags.HasErrors() {
+					return diags
+				}
+			} else if v.Default != nil {
+				vars[name], diags = v.Default.Expr.Value(&eval)
+				if diags.HasErrors() {
+					return diags
+				}
+			}
+			eval.Variables["var"] = cty.ObjectVal(vars)
 		case "certificate":
-			var cert Certificate
+			id := blk.Labels[0]
+			cert := Certificate{
+				ID:      id,
+				Version: 3,
+			}
 			values, diags := parseCertificate(eval.NewChild(), blk, &cert)
 			if diags.HasErrors() {
 				return diags
 			}
-			err := validateCert(&cert)
-			if err != nil {
-				return hcl.Diagnostics{{
-					Severity:    hcl.DiagError,
-					Summary:     "invalid certificate",
-					Detail:      err.Error(),
-					Subject:     &blk.DefRange,
-					Context:     &blk.TypeRange,
-					EvalContext: &eval,
-				}}
-			}
-			id := blk.Labels[0]
 			if _, ok := certificate[id]; ok {
 				return hcl.Diagnostics{{
 					Severity: hcl.DiagError,
@@ -100,6 +123,7 @@ func ParseConfig(c *config, content []byte, filename string) hcl.Diagnostics {
 					Subject:  &blk.LabelRanges[0],
 				}}
 			}
+			c.Certificates = append(c.Certificates, cert)
 			certificate[id] = values
 			// update the certificate variable block for dynamic content
 			eval.Variables["certificate"] = cty.ObjectVal(certificate)
@@ -112,11 +136,6 @@ func ParseConfig(c *config, content []byte, filename string) hcl.Diagnostics {
 				Detail:   fmt.Sprintf("block type %q not recognized", blk.Type),
 			}}
 		}
-	}
-
-	diags = gohcl.DecodeBody(f.Body, &eval, c)
-	if diags.HasErrors() {
-		return diags
 	}
 	return nil
 }
@@ -161,6 +180,16 @@ func parseCertificate(eval *hcl.EvalContext, block *hcl.Block, cert *Certificate
 	diags = gohcl.DecodeBody(block.Body, eval, cert)
 	if diags.HasErrors() {
 		diagnostics.Extend(diags)
+	}
+	err := validateCert(cert)
+	if err != nil {
+		return cty.NilVal, hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "invalid certificate",
+			Detail:   err.Error(),
+			Subject:  &block.DefRange,
+			Context:  &block.TypeRange,
+		}}
 	}
 	return cty.ObjectVal(value), diagnostics
 }

@@ -19,9 +19,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/hashicorp/hcl/v2"
 	"github.com/spf13/cobra"
 	"gopkg.hrry.dev/pki/internal/times"
-	"gopkg.in/yaml.v2"
 )
 
 func main() {
@@ -38,11 +38,11 @@ func NewRootCmd() *cobra.Command {
 		config      config
 	)
 	c := cobra.Command{
-		Use:          "pki",
-		Short:        `A cli tool for managing lots of ssl certificates.`,
-		SilenceUsage: false,
+		Use:           "pki",
+		Short:         `A cli tool for managing lots of ssl certificates.`,
+		SilenceUsage:  true,
+		SilenceErrors: true,
 		PersistentPreRunE: func(*cobra.Command, []string) error {
-			// files := make([]io.Reader, 0, len(configFiles))
 			for _, filename := range configFiles {
 				f, err := os.Open(filename)
 				if err != nil {
@@ -93,7 +93,6 @@ func newInitCmd(config *config) *cobra.Command {
 }
 
 func newConfigCmd(config *config) *cobra.Command {
-	var asYaml bool
 	c := cobra.Command{
 		Use:   "config",
 		Short: "View configuration",
@@ -102,11 +101,7 @@ func newConfigCmd(config *config) *cobra.Command {
 				err error
 				raw []byte
 			)
-			if asYaml {
-				raw, err = yaml.Marshal(config)
-			} else {
-				raw, err = json.MarshalIndent(config, "", "  ")
-			}
+			raw, err = json.MarshalIndent(config, "", "  ")
 			if err != nil {
 				return err
 			}
@@ -114,7 +109,6 @@ func newConfigCmd(config *config) *cobra.Command {
 			return nil
 		},
 	}
-	c.Flags().BoolVar(&asYaml, "yaml", asYaml, "print config in yaml format")
 	return &c
 }
 
@@ -139,24 +133,24 @@ func newStore(c *config) *store {
 
 type Certificate struct {
 	// Configuration metadata
-	ID       string `json:"id" yaml:"id" hcl:"id,label"`
-	IssuerID string `json:"issuer" yaml:"issuer" hcl:"issuer,optional"`
+	ID       string `json:"id" hcl:"id,label"`
+	IssuerID string `json:"issuer" hcl:"issuer,optional"`
 
 	// CSR template options
 	Version      int     `json:"version" hcl:"version,optional"`
-	SerialNumber string  `json:"serial_number" yaml:"serial_number" hcl:"serial_number,optional"`
-	Subject      Subject `json:"subject" yaml:"subject" hcl:"subject,block"`
-	CA           bool    `json:"ca" yaml:"ca" hcl:"ca,optional"`
-	MaxPathLen   int     `json:"max_path_len,omitempty" yaml:"max_path_len" hcl:"max_path_len,optional"`
+	SerialNumber string  `json:"serial_number" hcl:"serial_number,optional"`
+	Subject      Subject `json:"subject" hcl:"subject,block"`
+	CA           bool    `json:"ca" hcl:"ca,optional"`
+	MaxPathLen   int     `json:"max_path_len,omitempty" hcl:"max_path_len,optional"`
 
-	Expires   string `json:"expires,omitempty" yaml:"expires" hcl:"expires,optional"`
+	Expires   string `json:"expires,omitempty" hcl:"expires,optional"`
 	NotAfter  string `json:"not_after" hcl:"not_after,optional"`
 	NotBefore string `json:"not_before" hcl:"not_before,optional"`
 
 	KeyUsage    []x509.KeyUsage    `json:"key_usage,omitempty" hcl:"key_usage,optional"`
 	ExtKeyUsage []x509.ExtKeyUsage `json:"ext_key_usage,omitempty" hcl:"ext_key_usage,optional"`
 
-	DNS   []string `json:"dns,omitempty" yaml:"dns" hcl:"dns,optional"`
+	DNS   []string `json:"dns,omitempty" hcl:"dns,optional"`
 	Email []string `json:"email,omitempty" hcl:"email,optional"`
 	IPs   []string `json:"ips,omitempty" hcl:"ips,optional"`
 	URIs  []string `json:"uris,omitempty" hcl:"uris,optional"`
@@ -165,6 +159,8 @@ type Certificate struct {
 	IssuingCertificateURL []string                `json:"issuing_cert_url" hcl:"issuing_cert_url,optional"`
 	CRLDistributionPoints []string                `json:"crl_distribution_points" hcl:"crl_distribution_points,optional"`
 	PolicyIdentifiers     []asn1.ObjectIdentifier `json:"policy_identifiers" hcl:"policy_identifiers,optional"`
+
+	Body hcl.Body `json:"-" hcl:",body"`
 }
 
 func (crt *Certificate) subject() pkix.Name {
@@ -253,7 +249,6 @@ func (s *store) init() error {
 		if err != nil {
 			return err
 		}
-
 		derBytes, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
 		if err != nil {
 			return err
@@ -370,12 +365,12 @@ func exists(pathname string) bool {
 }
 
 type Subject struct {
-	CommonName         string `json:"common_name" yaml:"common_name" hcl:"common_name,optional"`
-	Organization       string `json:"organization,omitempty" yaml:"organization" hcl:"organization,optional"`
-	OrganizationalUnit string `json:"organizational_unit,omitempty" yaml:"organizational_unit" hcl:"organizational_unit,optional"`
-	Country            string `json:"country,omitempty" yaml:"country" hcl:"country,optional"`
-	Locality           string `json:"locality,omitempty" yaml:"locality" hcl:"locality,optional"`
-	Province           string `json:"province,omitempty" yaml:"province" hcl:"province,optional"`
-	StreetAddress      string `json:"street_address,omitempty" yaml:"street_address" hcl:"street_address,optional"`
-	PostalCode         string `json:"postal_code,omitempty" yaml:"postal_code" hcl:"postal_code,optional"`
+	CommonName         string `json:"common_name" hcl:"common_name,optional"`
+	Organization       string `json:"organization,omitempty" hcl:"organization,optional"`
+	OrganizationalUnit string `json:"organizational_unit,omitempty" hcl:"organizational_unit,optional"`
+	Country            string `json:"country,omitempty" hcl:"country,optional"`
+	Locality           string `json:"locality,omitempty" hcl:"locality,optional"`
+	Province           string `json:"province,omitempty" hcl:"province,optional"`
+	StreetAddress      string `json:"street_address,omitempty" hcl:"street_address,optional"`
+	PostalCode         string `json:"postal_code,omitempty" hcl:"postal_code,optional"`
 }
