@@ -1,0 +1,24 @@
+store: ./testdata/store
+keysize: 2048
+
+certificates:
+  - id: ca
+    ca: true
+    serial_number: "1000"
+    subject:
+      common_name: Testing Root CA
+      organization: PKI
+      organizational_unit: CLI tests
+    expires: 365d
+
+  - id: cert_1
+    issuer: ca # root cert ID
+    ca: false
+    serial_number: "1001"
+    subject:
+      common_name: example.com
+      organization: PKI CLI
+    dns:
+      - localhost
+      - example.com
+    expires: 365d
