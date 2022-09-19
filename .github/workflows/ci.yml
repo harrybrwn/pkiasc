@@ -1,0 +1,45 @@
+on: [push]
+name: ci
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v2
+    - uses: actions/setup-go@v2
+      with:
+        go-version: ~1.19
+    - name: go vet
+      run: go vet -v ./...
+    - name: golangci-lint
+      uses: golangci/golangci-lint-action@v2
+
+  test:
+    name: test
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v2
+    - uses: actions/setup-go@v2
+      with:
+        go-version: ~1.19
+
+    - name: Cache Dependencies
+      uses: actions/cache@v2
+      id: go-cache
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+          ~/go/bin
+        key: ${{ runner.os }}_${{ runner.arch }}-${{ steps.go-version.outputs.version-used }}-build-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}_${{ runner.arch }}-${{ steps.go-version.outputs.version-used }}-build-
+    - name: Install Go dependencies
+      if: steps.go-cache.outputs.cache-hit != 'true'
+      run: go mod download
+
+    - name: Run tests
+      run: go test -v ./...

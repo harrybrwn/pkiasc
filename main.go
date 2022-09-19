@@ -16,10 +16,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
-	"github.com/hashicorp/hcl/v2"
 	"github.com/spf13/cobra"
 	"gopkg.hrry.dev/pki/internal/times"
 )
@@ -36,6 +34,7 @@ func NewRootCmd() *cobra.Command {
 	var (
 		configFiles = []string{"pki.hcl"}
 		config      config
+		varList     = make([]string, 0)
 	)
 	c := cobra.Command{
 		Use:           "pki",
@@ -53,7 +52,7 @@ func NewRootCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				diags := ParseConfig(&config, bytes, filename)
+				diags := ParseConfig(&config, filename, bytes, varList)
 				if diags.HasErrors() {
 					return diags
 				}
@@ -64,6 +63,7 @@ func NewRootCmd() *cobra.Command {
 	f := c.PersistentFlags()
 	f.StringArrayVarP(&configFiles, "config", "c", configFiles, "configuration file")
 	f.StringVar(&config.Store, "store", config.Store, "base storage directory")
+	f.StringSliceVarP(&varList, "var", "v", varList, "set variable values via the command line")
 	c.AddCommand(
 		newInitCmd(&config),
 		newConfigCmd(&config),
@@ -159,8 +159,6 @@ type Certificate struct {
 	IssuingCertificateURL []string                `json:"issuing_cert_url" hcl:"issuing_cert_url,optional"`
 	CRLDistributionPoints []string                `json:"crl_distribution_points" hcl:"crl_distribution_points,optional"`
 	PolicyIdentifiers     []asn1.ObjectIdentifier `json:"policy_identifiers" hcl:"policy_identifiers,optional"`
-
-	Body hcl.Body `json:"-" hcl:",body"`
 }
 
 func (crt *Certificate) subject() pkix.Name {
@@ -318,9 +316,9 @@ func newTemplate(cert *Certificate) (*x509.Certificate, error) {
 		notAfter = time.Now().Add(d)
 	}
 
-	serial, err := strconv.ParseInt(cert.SerialNumber, 16, 64)
-	if err != nil {
-		return nil, fmt.Errorf("could not parse serial number %q: %w", cert.SerialNumber, err)
+	serial, ok := new(big.Int).SetString(cert.SerialNumber, 16)
+	if !ok {
+		return nil, fmt.Errorf("could not parse serial number %q", cert.SerialNumber)
 	}
 	var (
 		usage x509.KeyUsage
@@ -340,11 +338,12 @@ func newTemplate(cert *Certificate) (*x509.Certificate, error) {
 		}
 		uris = append(uris, u)
 	}
+
 	return &x509.Certificate{
 		Version:               3,
 		IsCA:                  cert.CA,
-		BasicConstraintsValid: true,
-		SerialNumber:          big.NewInt(serial),
+		BasicConstraintsValid: cert.CA,
+		SerialNumber:          serial,
 		Subject:               cert.subject(),
 		NotBefore:             notBefore,
 		NotAfter:              notAfter,

@@ -163,6 +163,8 @@ var quoteFunc = function.New(&function.Spec{
 	},
 })
 
+var now = time.Now
+
 var timeAfterFunc = function.New(&function.Spec{
 	Params: []function.Parameter{{
 		Name: "duration",
@@ -174,7 +176,7 @@ var timeAfterFunc = function.New(&function.Spec{
 		if err != nil {
 			return cty.StringVal(""), err
 		}
-		tm := time.Now().Add(d).Format(timestampFormat)
+		tm := now().Add(d).Format(timestampFormat)
 		return cty.StringVal(tm), nil
 	},
 })

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
@@ -14,7 +15,6 @@ import (
 )
 
 var (
-	// ConfigSchema, _      = gohcl.ImpliedBodySchema(&config{})
 	ConfigSchema = hcl.BodySchema{
 		Attributes: []hcl.AttributeSchema{
 			{Name: "store", Required: true},
@@ -26,7 +26,6 @@ var (
 		},
 	}
 	CertificateSchema, _ = gohcl.ImpliedBodySchema(&Certificate{})
-	SubjectSchema, _     = gohcl.ImpliedBodySchema(&Subject{})
 )
 
 type config struct {
@@ -42,7 +41,7 @@ type variable struct {
 	Body    hcl.Body       `hcl:",body"`
 }
 
-func ParseConfig(c *config, content []byte, filename string) hcl.Diagnostics {
+func ParseConfig(c *config, filename string, content []byte, inputList []string) hcl.Diagnostics {
 	f, diags := hclparse.NewParser().ParseHCL(content, filename)
 	if diags.HasErrors() {
 		return diags
@@ -58,10 +57,21 @@ func ParseConfig(c *config, content []byte, filename string) hcl.Diagnostics {
 
 	var (
 		// Holds intermediate certificate runtime state used for variables
-		certificate    = make(map[string]cty.Value)
-		vars           = make(map[string]cty.Value)
-		bodyContent, _ = f.Body.Content(&ConfigSchema)
+		certificate = make(map[string]cty.Value)
+		vars        = make(map[string]cty.Value)
 	)
+	input, err := parseVarInput(inputList)
+	if err != nil {
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "invalid input variable",
+			Detail:   err.Error(),
+		}}
+	}
+	bodyContent, diags := f.Body.Content(&ConfigSchema)
+	if diags.HasErrors() {
+		return diags
+	}
 
 	if attr, ok := bodyContent.Attributes["keysize"]; ok {
 		diags = gohcl.DecodeExpression(attr.Expr, &eval, &c.KeySize)
@@ -69,7 +79,6 @@ func ParseConfig(c *config, content []byte, filename string) hcl.Diagnostics {
 			return diags
 		}
 	}
-
 	if attr, ok := bodyContent.Attributes["store"]; ok {
 		diags = gohcl.DecodeExpression(attr.Expr, &eval, &c.Store)
 		if diags.HasErrors() {
@@ -93,7 +102,9 @@ func ParseConfig(c *config, content []byte, filename string) hcl.Diagnostics {
 			if diags.HasErrors() {
 				return diags
 			}
-			if v.Value != nil {
+			if val, ok := input[name]; ok {
+				vars[name] = val
+			} else if v.Value != nil {
 				vars[name], diags = v.Value.Expr.Value(&eval)
 				if diags.HasErrors() {
 					return diags
@@ -105,6 +116,16 @@ func ParseConfig(c *config, content []byte, filename string) hcl.Diagnostics {
 				}
 			}
 			eval.Variables["var"] = cty.ObjectVal(vars)
+
+		case "template":
+			return hcl.Diagnostics{{
+				Severity: hcl.DiagError,
+				Summary:  "invalid block",
+				Detail:   "certificate templates are not yet supported",
+				Subject:  &blk.TypeRange,
+				Context:  &blk.DefRange,
+			}}
+
 		case "certificate":
 			id := blk.Labels[0]
 			cert := Certificate{
@@ -127,6 +148,7 @@ func ParseConfig(c *config, content []byte, filename string) hcl.Diagnostics {
 			certificate[id] = values
 			// update the certificate variable block for dynamic content
 			eval.Variables["certificate"] = cty.ObjectVal(certificate)
+
 		default:
 			return hcl.Diagnostics{{
 				Severity: hcl.DiagError,
@@ -156,7 +178,7 @@ func parseCertificate(eval *hcl.EvalContext, block *hcl.Block, cert *Certificate
 	for _, attr := range content.Attributes {
 		value[attr.Name], diags = attr.Expr.Value(eval)
 		if diags.HasErrors() {
-			diagnostics.Extend(diags)
+			diagnostics = append(diagnostics, diags...)
 			continue
 		}
 	}
@@ -164,14 +186,14 @@ func parseCertificate(eval *hcl.EvalContext, block *hcl.Block, cert *Certificate
 		// TODO we might support other block types in the future
 		attrs, diags := blk.Body.JustAttributes()
 		if diags.HasErrors() {
-			diagnostics.Extend(diags)
+			diagnostics = append(diagnostics, diags...)
 			continue
 		}
 		subvals := map[string]cty.Value{}
 		for _, attr := range attrs {
 			subvals[attr.Name], diags = attr.Expr.Value(eval)
 			if diags.HasErrors() {
-				diagnostics.Extend(diags)
+				diagnostics = append(diagnostics, diags...)
 				continue
 			}
 		}
@@ -179,7 +201,7 @@ func parseCertificate(eval *hcl.EvalContext, block *hcl.Block, cert *Certificate
 	}
 	diags = gohcl.DecodeBody(block.Body, eval, cert)
 	if diags.HasErrors() {
-		diagnostics.Extend(diags)
+		diagnostics = append(diagnostics, diags...)
 	}
 	err := validateCert(cert)
 	if err != nil {
@@ -206,4 +228,44 @@ func envVars() cty.Value {
 		m[k] = cty.StringVal(v)
 	}
 	return cty.ObjectVal(m)
+}
+
+func parseVarInput(list []string) (map[string]cty.Value, error) {
+	m := make(map[string]cty.Value)
+	for _, item := range list {
+		item = strings.TrimLeft(item, " \t")
+		i := strings.Index(item, "=")
+
+		v := item[i+1:]
+		k := item[:i]
+		switch v {
+		case "true", "false":
+			val, err := strconv.ParseBool(v)
+			if err != nil {
+				return nil, err
+			}
+			m[k] = cty.BoolVal(val)
+		default:
+			if v[0] == '[' {
+				expr, diags := hclsyntax.ParseExpression([]byte(v), "", hcl.InitialPos)
+				if diags.HasErrors() {
+					return nil, errors.New("failed to parse array syntax")
+				}
+				val, diags := expr.Value(nil)
+				if diags.HasErrors() {
+					return nil, errors.New("failed to parse array syntax")
+				}
+				m[k] = val
+			} else if v[0] >= 48 && v[0] <= 57 {
+				val, err := strconv.ParseInt(v, 10, 64)
+				if err != nil {
+					return nil, err
+				}
+				m[k] = cty.NumberIntVal(val)
+			} else {
+				m[k] = cty.StringVal(v)
+			}
+		}
+	}
+	return m, nil
 }
