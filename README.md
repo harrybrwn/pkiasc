@@ -1,4 +1,4 @@
-# [name]
+# pkiasc (PKI as Code)
 Manage TLS certificates with a declarative plaintext interface.
 
 ## Setup

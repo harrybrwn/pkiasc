@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"gopkg.hrry.dev/pki/internal/times"
+	"gopkg.hrry.dev/pkiasc/internal/times"
 )
 
 func main() {

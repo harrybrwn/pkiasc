@@ -15,7 +15,7 @@ import (
 	"github.com/zclconf/go-cty/cty/function"
 	"github.com/zclconf/go-cty/cty/function/stdlib"
 
-	"gopkg.hrry.dev/pki/internal/times"
+	"gopkg.hrry.dev/pkiasc/internal/times"
 )
 
 const timestampFormat = time.RFC3339Nano

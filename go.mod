@@ -1,4 +1,4 @@
-module gopkg.hrry.dev/pki
+module gopkg.hrry.dev/pkiasc
 
 go 1.18
 
