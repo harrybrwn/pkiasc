@@ -41,26 +41,28 @@ type variable struct {
 	Body    hcl.Body       `hcl:",body"`
 }
 
+func (v *variable) value(ctx *hcl.EvalContext) (cty.Value, hcl.Diagnostics) {
+	if v.Value != nil {
+		return v.Value.Expr.Value(ctx)
+	} else if v.Default != nil {
+		return v.Default.Expr.Value(ctx)
+	}
+	return cty.NilVal, nil
+}
+
 func ParseConfig(c *config, filename string, content []byte, inputList []string) hcl.Diagnostics {
 	f, diags := hclparse.NewParser().ParseHCL(content, filename)
 	if diags.HasErrors() {
 		return diags
 	}
-	eval := hcl.EvalContext{
-		Variables: map[string]cty.Value{
-			"key_usage":     cty.ObjectVal(keyUsageConstants),
-			"ext_key_usage": cty.ObjectVal(extKeyUsageConstants),
-			"env":           envVars(),
-		},
-		Functions: stdlibFunctions,
-	}
+	eval := EvalContext()
 
 	var (
 		// Holds intermediate certificate runtime state used for variables
 		certificate = make(map[string]cty.Value)
 		vars        = make(map[string]cty.Value)
 	)
-	input, err := parseVarInput(inputList)
+	input, err := parseVarInput(inputList, eval)
 	if err != nil {
 		return hcl.Diagnostics{{
 			Severity: hcl.DiagError,
@@ -74,13 +76,13 @@ func ParseConfig(c *config, filename string, content []byte, inputList []string)
 	}
 
 	if attr, ok := bodyContent.Attributes["keysize"]; ok {
-		diags = gohcl.DecodeExpression(attr.Expr, &eval, &c.KeySize)
+		diags = gohcl.DecodeExpression(attr.Expr, eval, &c.KeySize)
 		if diags.HasErrors() {
 			return diags
 		}
 	}
 	if attr, ok := bodyContent.Attributes["store"]; ok {
-		diags = gohcl.DecodeExpression(attr.Expr, &eval, &c.Store)
+		diags = gohcl.DecodeExpression(attr.Expr, eval, &c.Store)
 		if diags.HasErrors() {
 			return diags
 		}
@@ -89,28 +91,14 @@ func ParseConfig(c *config, filename string, content []byte, inputList []string)
 	for _, blk := range bodyContent.Blocks {
 		switch blk.Type {
 		case "var":
-			name := blk.Labels[0]
-			if !hclsyntax.ValidIdentifier(name) {
-				return hcl.Diagnostics{{
-					Severity: hcl.DiagError,
-					Summary:  "Invalid variable name",
-					Subject:  &blk.LabelRanges[0],
-				}}
-			}
-			v := variable{Name: name}
-			diags = gohcl.DecodeBody(blk.Body, eval.NewChild(), &v)
+			v, diags := parseVariable(eval, blk)
 			if diags.HasErrors() {
 				return diags
 			}
-			if val, ok := input[name]; ok {
-				vars[name] = val
-			} else if v.Value != nil {
-				vars[name], diags = v.Value.Expr.Value(&eval)
-				if diags.HasErrors() {
-					return diags
-				}
-			} else if v.Default != nil {
-				vars[name], diags = v.Default.Expr.Value(&eval)
+			if val, ok := input[v.Name]; ok {
+				vars[v.Name] = val
+			} else {
+				vars[v.Name], diags = v.value(eval)
 				if diags.HasErrors() {
 					return diags
 				}
@@ -216,6 +204,23 @@ func parseCertificate(eval *hcl.EvalContext, block *hcl.Block, cert *Certificate
 	return cty.ObjectVal(value), diagnostics
 }
 
+func parseVariable(eval *hcl.EvalContext, block *hcl.Block) (*variable, hcl.Diagnostics) {
+	name := block.Labels[0]
+	if !hclsyntax.ValidIdentifier(name) {
+		return nil, hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid variable name",
+			Subject:  &block.LabelRanges[0],
+		}}
+	}
+	v := variable{Name: name}
+	diags := gohcl.DecodeBody(block.Body, eval.NewChild(), &v)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+	return &v, nil
+}
+
 func envVars() cty.Value {
 	m := map[string]cty.Value{}
 	for _, pair := range os.Environ() {
@@ -230,7 +235,7 @@ func envVars() cty.Value {
 	return cty.ObjectVal(m)
 }
 
-func parseVarInput(list []string) (map[string]cty.Value, error) {
+func parseVarInput(list []string, eval *hcl.EvalContext) (map[string]cty.Value, error) {
 	m := make(map[string]cty.Value)
 	for _, item := range list {
 		item = strings.TrimLeft(item, " \t")
@@ -251,7 +256,7 @@ func parseVarInput(list []string) (map[string]cty.Value, error) {
 				if diags.HasErrors() {
 					return nil, errors.New("failed to parse array syntax")
 				}
-				val, diags := expr.Value(nil)
+				val, diags := expr.Value(eval)
 				if diags.HasErrors() {
 					return nil, errors.New("failed to parse array syntax")
 				}

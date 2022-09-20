@@ -11,12 +11,24 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/hashicorp/hcl/v2"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/function"
 	"github.com/zclconf/go-cty/cty/function/stdlib"
 
 	"gopkg.hrry.dev/pkiasc/internal/times"
 )
+
+func EvalContext() *hcl.EvalContext {
+	return &hcl.EvalContext{
+		Variables: map[string]cty.Value{
+			"key_usage":     cty.ObjectVal(keyUsageConstants),
+			"ext_key_usage": cty.ObjectVal(extKeyUsageConstants),
+			"env":           envVars(),
+		},
+		Functions: stdlibFunctions,
+	}
+}
 
 const timestampFormat = time.RFC3339Nano
 
@@ -46,6 +58,7 @@ var stdlibFunctions = map[string]function.Function{
 	"keys":            stdlib.KeysFunc,
 	"log":             stdlib.LogFunc,
 	"lower":           stdlib.LowerFunc,
+	"now":             nowFunc,
 	"max":             stdlib.MaxFunc,
 	"merge":           stdlib.MergeFunc,
 	"min":             stdlib.MinFunc,
@@ -177,6 +190,13 @@ var timeAfterFunc = function.New(&function.Spec{
 			return cty.StringVal(""), err
 		}
 		tm := now().Add(d).Format(timestampFormat)
+		return cty.StringVal(tm), nil
+	},
+})
+
+var nowFunc = function.New(&function.Spec{
+	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+		tm := now().Format(timestampFormat)
 		return cty.StringVal(tm), nil
 	},
 })

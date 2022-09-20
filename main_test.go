@@ -1,33 +1,10 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"testing"
 	"time"
-
-	"github.com/hashicorp/hcl/v2"
-	"github.com/hashicorp/hcl/v2/hclsyntax"
 )
-
-func Test(t *testing.T) {
-	expr, diags := hclsyntax.ParseExpression(
-		[]byte(`[1,2,3,4,5]`),
-		"",
-		hcl.Pos{Byte: 0, Line: 1, Column: 1},
-	)
-	if diags.HasErrors() {
-		t.Fatal(diags)
-	}
-	fmt.Printf("%#v\n", expr)
-	v, diags := expr.Value(nil)
-	if diags.HasErrors() {
-		t.Fatal(diags)
-	}
-	for _, v := range v.AsValueSlice() {
-		fmt.Println(v.AsBigFloat())
-	}
-}
 
 func TestConfigHCL(t *testing.T) {
 	const filename = "./testdata/config.hcl"
@@ -40,12 +17,6 @@ func TestConfigHCL(t *testing.T) {
 	if diags.HasErrors() {
 		t.Fatal(diags)
 	}
-
-	// raw, err := json.MarshalIndent(c, "", "  ")
-	// if err != nil {
-	// 	t.Fatal(err)
-	// }
-	// fmt.Printf("%s\n", raw)
 
 	if len(c.Store) == 0 {
 		t.Fatal("empty store setting")
@@ -136,4 +107,7 @@ func TestStore(t *testing.T) {
 }
 
 func TestReadConfig(t *testing.T) {
+}
+
+func Test(t *testing.T) {
 }

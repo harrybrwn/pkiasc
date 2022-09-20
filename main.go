@@ -161,6 +161,17 @@ type Certificate struct {
 	PolicyIdentifiers     []asn1.ObjectIdentifier `json:"policy_identifiers" hcl:"policy_identifiers,optional"`
 }
 
+type Subject struct {
+	CommonName         string `json:"common_name" hcl:"common_name,optional"`
+	Organization       string `json:"organization,omitempty" hcl:"organization,optional"`
+	OrganizationalUnit string `json:"organizational_unit,omitempty" hcl:"organizational_unit,optional"`
+	Country            string `json:"country,omitempty" hcl:"country,optional"`
+	Locality           string `json:"locality,omitempty" hcl:"locality,optional"`
+	Province           string `json:"province,omitempty" hcl:"province,optional"`
+	StreetAddress      string `json:"street_address,omitempty" hcl:"street_address,optional"`
+	PostalCode         string `json:"postal_code,omitempty" hcl:"postal_code,optional"`
+}
+
 func (crt *Certificate) subject() pkix.Name {
 	s := crt.Subject
 	subj := pkix.Name{
@@ -340,7 +351,7 @@ func newTemplate(cert *Certificate) (*x509.Certificate, error) {
 	}
 
 	return &x509.Certificate{
-		Version:               3,
+		Version:               cert.Version,
 		IsCA:                  cert.CA,
 		BasicConstraintsValid: cert.CA,
 		SerialNumber:          serial,
@@ -361,15 +372,4 @@ func newTemplate(cert *Certificate) (*x509.Certificate, error) {
 func exists(pathname string) bool {
 	_, err := os.Stat(pathname)
 	return !os.IsNotExist(err)
-}
-
-type Subject struct {
-	CommonName         string `json:"common_name" hcl:"common_name,optional"`
-	Organization       string `json:"organization,omitempty" hcl:"organization,optional"`
-	OrganizationalUnit string `json:"organizational_unit,omitempty" hcl:"organizational_unit,optional"`
-	Country            string `json:"country,omitempty" hcl:"country,optional"`
-	Locality           string `json:"locality,omitempty" hcl:"locality,optional"`
-	Province           string `json:"province,omitempty" hcl:"province,optional"`
-	StreetAddress      string `json:"street_address,omitempty" hcl:"street_address,optional"`
-	PostalCode         string `json:"postal_code,omitempty" hcl:"postal_code,optional"`
 }
