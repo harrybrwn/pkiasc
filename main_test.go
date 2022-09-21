@@ -42,10 +42,12 @@ func TestConfig(t *testing.T) {
 	diags := ParseConfig(&c, "test.hcl", []byte(`
 store = "./testdata/TestConfig"
 keysize = 1024
+var "not_before" {}
 certificate "ca" {
 	ca            = true
 	not_after     = timeafter("365d")
 	serial_number = serial()
+	not_before    = timeafter(var.not_before)
 	subject {
 		common_name = title("testing root CA")
 		organization = upper("test org")
@@ -56,6 +58,7 @@ certificate "cert_1" {
 	issuer        = certificate.ca.id
 	serial_number = serial()
 	not_after     = timeafter("1y4mo")
+	not_before    = timeafter(var.not_before)
 	subject {
 		common_name  = "jimmy.me"
 		organization = certificate.ca.subject.organization
@@ -63,7 +66,7 @@ certificate "cert_1" {
 	ext_key_usage = [ext_key_usage.server_auth]
 	dns = ["jimmy.me", "*.jimmy.me"]
 }
-`), nil)
+`), []string{"not_before=1mo5m35ms"})
 	if diags.HasErrors() {
 		t.Fatal(diags)
 	}

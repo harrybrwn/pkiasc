@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"crypto/x509"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/go-cty-funcs/cidr"
@@ -43,9 +45,9 @@ func EvalContext(body hcl.Body) (*hcl.EvalContext, hcl.Diagnostics) {
 		case "var":
 			continue
 		case "certificate":
-			content, diagnostics := block.Body.Content(CertificateSchema)
-			if diagnostics.HasErrors() {
-				return nil, diagnostics
+			content, diags := block.Body.Content(CertificateSchema)
+			if diags.HasErrors() {
+				return nil, diags
 			}
 			cert := make(map[string]cty.Value, len(content.Attributes)+len(content.Blocks))
 			if len(block.Labels) < 1 {
@@ -74,31 +76,29 @@ func EvalContext(body hcl.Body) (*hcl.EvalContext, hcl.Diagnostics) {
 				}
 				cert[attr.Name], diags = attr.Expr.Value(eval)
 				if diags.HasErrors() {
-					diagnostics = append(diagnostics, diags...)
-					continue
+					return nil, diags
 				}
 			}
 			for _, blk := range content.Blocks {
 				// TODO we might support other block types in the future
 				attrs, diags := blk.Body.JustAttributes()
 				if diags.HasErrors() {
-					diagnostics = append(diagnostics, diags...)
-					continue
+					return nil, diags
 				}
-				subvals := make(map[string]cty.Value, len(attrs))
+				inner := make(map[string]cty.Value, len(attrs))
 				for _, attr := range attrs {
 					if !isConstExpr(attr.Expr) {
 						continue
 					}
-					subvals[attr.Name], diags = attr.Expr.Value(eval)
+					inner[attr.Name], diags = attr.Expr.Value(eval)
 					if diags.HasErrors() {
-						diagnostics = append(diagnostics, diags...)
-						continue
+						return nil, diags
 					}
 				}
-				cert[blk.Type] = cty.ObjectVal(subvals)
+				cert[blk.Type] = cty.ObjectVal(inner)
 			}
 			certificates[id] = cty.ObjectVal(cert)
+
 		default:
 			return nil, hcl.Diagnostics{{
 				Severity: hcl.DiagError,
@@ -111,6 +111,20 @@ func EvalContext(body hcl.Body) (*hcl.EvalContext, hcl.Diagnostics) {
 	}
 	eval.Variables["certificate"] = cty.ObjectVal(certificates)
 	return eval, nil
+}
+
+func envVars() cty.Value {
+	m := map[string]cty.Value{}
+	for _, pair := range os.Environ() {
+		i := strings.Index(pair, "=")
+		if i < 0 {
+			continue
+		}
+		k := pair[:i]
+		v := pair[i+1:]
+		m[k] = cty.StringVal(v)
+	}
+	return cty.ObjectVal(m)
 }
 
 func isConstExpr(expr hcl.Expression) bool {

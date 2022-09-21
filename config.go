@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
@@ -173,20 +172,6 @@ func parseVariable(eval *hcl.EvalContext, block *hcl.Block) (*variable, hcl.Diag
 	return &v, nil
 }
 
-func envVars() cty.Value {
-	m := map[string]cty.Value{}
-	for _, pair := range os.Environ() {
-		i := strings.Index(pair, "=")
-		if i < 0 {
-			continue
-		}
-		k := pair[:i]
-		v := pair[i+1:]
-		m[k] = cty.StringVal(v)
-	}
-	return cty.ObjectVal(m)
-}
-
 func parseVarInput(list []string, eval *hcl.EvalContext) (map[string]cty.Value, error) {
 	m := make(map[string]cty.Value)
 	for _, item := range list {
@@ -215,7 +200,9 @@ func parseVarInput(list []string, eval *hcl.EvalContext) (map[string]cty.Value, 
 				m[k] = val
 			} else if v[0] >= 48 && v[0] <= 57 {
 				val, err := strconv.ParseInt(v, 10, 64)
-				if err != nil {
+				if errors.Is(err, strconv.ErrSyntax) {
+					m[k] = cty.StringVal(v)
+				} else if err != nil {
 					return nil, err
 				}
 				m[k] = cty.NumberIntVal(val)
