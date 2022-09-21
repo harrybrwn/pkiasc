@@ -7,7 +7,8 @@ var "country" {
 
 certificate "ca" {
 	ca            = true
-	expires       = "365d"
+	not_after     = timeafter("365d")
+	not_before    = now()
 	serial_number = serial()
 
 	subject {

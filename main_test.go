@@ -1,9 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclparse"
 )
 
 func TestConfigHCL(t *testing.T) {
@@ -27,7 +31,7 @@ func TestConfigHCL(t *testing.T) {
 
 	s := newStore(&c)
 	defer os.RemoveAll(s.dir)
-	err = s.init()
+	err = s.init(false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,5 +113,59 @@ func TestStore(t *testing.T) {
 func TestReadConfig(t *testing.T) {
 }
 
+func printAttr(attr *hcl.Attribute, eval *hcl.EvalContext) {
+	_, diags := attr.Expr.Value(eval)
+	v := attr.Expr.Variables()
+	fmt.Printf("%T ", attr.Expr)
+	fmt.Println(len(v), isConstExpr(attr.Expr), diags)
+
+	// if !diags.HasErrors() && len(v) > 0 {
+	// 	fmt.Println(v)
+	// }
+
+	// if len(v) > 0 {
+	// 	fmt.Printf("%T %v %v\n", attr.Expr, len(attr.Expr.Variables()), diags)
+	// 	fmt.Println(v[0].IsRelative(), v[0].RootName(), v)
+	// }
+}
+
 func Test(t *testing.T) {
+	t.Skip()
+	const filename = "./testdata/config.hcl"
+	bytes, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, diags := hclparse.NewParser().ParseHCL(bytes, filename)
+	if diags.HasErrors() {
+		t.Fatal(diags)
+	}
+	eval := &hcl.EvalContext{}
+	_ = eval
+	outerContent, diags := f.Body.Content(&ConfigSchema)
+	if diags.HasErrors() {
+		t.Fatal(diags)
+	}
+	for _, block := range outerContent.Blocks {
+		if block.Type != "certificate" {
+			continue
+		}
+		content, diags := block.Body.Content(CertificateSchema)
+		if diags.HasErrors() {
+			t.Fatal(diags)
+		}
+		for _, attr := range content.Attributes {
+			printAttr(attr, eval)
+		}
+		for _, blk := range content.Blocks.OfType("subject") {
+			attrs, diags := blk.Body.JustAttributes()
+			if diags.HasErrors() {
+				t.Fatal(diags)
+			}
+			for _, attr := range attrs {
+				printAttr(attr, eval)
+			}
+		}
+
+	}
 }

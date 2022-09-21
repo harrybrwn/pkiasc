@@ -1,17 +1,19 @@
 package main
 
 import (
-	"crypto/sha1"
-	"crypto/sha256"
-	"crypto/sha512"
+	"bytes"
 	"crypto/x509"
-	"encoding/hex"
 	"fmt"
-	"hash"
+	"os/exec"
 	"strconv"
 	"time"
 
+	"github.com/hashicorp/go-cty-funcs/cidr"
+	"github.com/hashicorp/go-cty-funcs/crypto"
+	"github.com/hashicorp/go-cty-funcs/encoding"
+	"github.com/hashicorp/go-cty-funcs/uuid"
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/ext/tryfunc"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/function"
 	"github.com/zclconf/go-cty/cty/function/stdlib"
@@ -19,8 +21,14 @@ import (
 	"gopkg.hrry.dev/pkiasc/internal/times"
 )
 
-func EvalContext() *hcl.EvalContext {
-	return &hcl.EvalContext{
+func EvalContext(body hcl.Body) (*hcl.EvalContext, hcl.Diagnostics) {
+	configContent, diags := body.Content(&ConfigSchema)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+
+	var certificates = make(map[string]cty.Value)
+	eval := &hcl.EvalContext{
 		Variables: map[string]cty.Value{
 			"key_usage":     cty.ObjectVal(keyUsageConstants),
 			"ext_key_usage": cty.ObjectVal(extKeyUsageConstants),
@@ -28,62 +36,180 @@ func EvalContext() *hcl.EvalContext {
 		},
 		Functions: stdlibFunctions,
 	}
+
+	// Collect and evaluate all constant expressions to put in variables
+	for _, block := range configContent.Blocks {
+		switch block.Type {
+		case "var":
+			continue
+		case "certificate":
+			content, diagnostics := block.Body.Content(CertificateSchema)
+			if diagnostics.HasErrors() {
+				return nil, diagnostics
+			}
+			cert := make(map[string]cty.Value, len(content.Attributes)+len(content.Blocks))
+			if len(block.Labels) < 1 {
+				return nil, hcl.Diagnostics{{
+					Severity: hcl.DiagError,
+					Summary:  "invalid block",
+					Detail:   "missing label value",
+					Subject:  &block.TypeRange,
+					Context:  &block.DefRange,
+				}}
+			}
+			id := block.Labels[0]
+			if _, ok := certificates[id]; ok {
+				return nil, hcl.Diagnostics{{
+					Severity: hcl.DiagError,
+					Summary:  "duplicate block",
+					Detail:   fmt.Sprintf("can't have more that one certificate named %q", id),
+					Subject:  &block.LabelRanges[0],
+					Context:  &block.DefRange,
+				}}
+			}
+			cert["id"] = cty.StringVal(id)
+			for _, attr := range content.Attributes {
+				if !isConstExpr(attr.Expr) {
+					continue
+				}
+				cert[attr.Name], diags = attr.Expr.Value(eval)
+				if diags.HasErrors() {
+					diagnostics = append(diagnostics, diags...)
+					continue
+				}
+			}
+			for _, blk := range content.Blocks {
+				// TODO we might support other block types in the future
+				attrs, diags := blk.Body.JustAttributes()
+				if diags.HasErrors() {
+					diagnostics = append(diagnostics, diags...)
+					continue
+				}
+				subvals := make(map[string]cty.Value, len(attrs))
+				for _, attr := range attrs {
+					if !isConstExpr(attr.Expr) {
+						continue
+					}
+					subvals[attr.Name], diags = attr.Expr.Value(eval)
+					if diags.HasErrors() {
+						diagnostics = append(diagnostics, diags...)
+						continue
+					}
+				}
+				cert[blk.Type] = cty.ObjectVal(subvals)
+			}
+			certificates[id] = cty.ObjectVal(cert)
+		default:
+			return nil, hcl.Diagnostics{{
+				Severity: hcl.DiagError,
+				Subject:  &block.TypeRange,
+				Context:  &block.DefRange,
+				Summary:  "invalid block",
+				Detail:   fmt.Sprintf("block type %q not recognized", block.Type),
+			}}
+		}
+	}
+	eval.Variables["certificate"] = cty.ObjectVal(certificates)
+	return eval, nil
+}
+
+func isConstExpr(expr hcl.Expression) bool {
+	for _, t := range expr.Variables() {
+		switch t.RootName() {
+		case "env", "key_usage", "ext_key_usage":
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 const timestampFormat = time.RFC3339Nano
 
 var stdlibFunctions = map[string]function.Function{
-	"abs":             stdlib.AbsoluteFunc,
-	"add":             stdlib.AddFunc,
-	"ceil":            stdlib.CeilFunc,
-	"chomp":           stdlib.ChompFunc,
-	"coalescelist":    stdlib.CoalesceListFunc,
-	"compact":         stdlib.CompactFunc,
-	"concat":          stdlib.ConcatFunc,
-	"contains":        stdlib.ContainsFunc,
-	"csvdecode":       stdlib.CSVDecodeFunc,
-	"distinct":        stdlib.DistinctFunc,
-	"element":         stdlib.ElementFunc,
-	"chunklist":       stdlib.ChunklistFunc,
-	"flatten":         stdlib.FlattenFunc,
-	"floor":           stdlib.FloorFunc,
-	"format":          stdlib.FormatFunc,
-	"formatdate":      stdlib.FormatDateFunc,
-	"formatlist":      stdlib.FormatListFunc,
-	"indent":          stdlib.IndentFunc,
-	"index":           stdlib.IndexFunc,
-	"join":            stdlib.JoinFunc,
-	"jsondecode":      stdlib.JSONDecodeFunc,
-	"jsonencode":      stdlib.JSONEncodeFunc,
-	"keys":            stdlib.KeysFunc,
-	"log":             stdlib.LogFunc,
-	"lower":           stdlib.LowerFunc,
-	"now":             nowFunc,
-	"max":             stdlib.MaxFunc,
-	"merge":           stdlib.MergeFunc,
-	"min":             stdlib.MinFunc,
-	"parseint":        stdlib.ParseIntFunc,
-	"pow":             stdlib.PowFunc,
-	"quote":           quoteFunc,
-	"range":           stdlib.RangeFunc,
-	"regex":           stdlib.RegexFunc,
-	"regexall":        stdlib.RegexAllFunc,
-	"reverse":         stdlib.ReverseListFunc,
-	"setintersection": stdlib.SetIntersectionFunc,
-	"setproduct":      stdlib.SetProductFunc,
-	"setsubtract":     stdlib.SetSubtractFunc,
-	"setunion":        stdlib.SetUnionFunc,
+	"abs":               stdlib.AbsoluteFunc,
+	"add":               stdlib.AddFunc,
+	"and":               stdlib.AndFunc,
+	"base64decode":      encoding.Base64DecodeFunc,
+	"base64encode":      encoding.Base64EncodeFunc,
+	"bcrypt":            crypto.BcryptFunc,
+	"byteslen":          stdlib.BytesLenFunc,
+	"bytesslice":        stdlib.BytesSliceFunc,
+	"can":               tryfunc.CanFunc,
+	"ceil":              stdlib.CeilFunc,
+	"chomp":             stdlib.ChompFunc,
+	"chunklist":         stdlib.ChunklistFunc,
+	"cidrhost":          cidr.HostFunc,
+	"cidrnetmask":       cidr.NetmaskFunc,
+	"cidrsubnet":        cidr.SubnetFunc,
+	"cidrsubnets":       cidr.SubnetsFunc,
+	"csvdecode":         stdlib.CSVDecodeFunc,
+	"coalesce":          stdlib.CoalesceFunc,
+	"coalescelist":      stdlib.CoalesceListFunc,
+	"compact":           stdlib.CompactFunc,
+	"concat":            stdlib.ConcatFunc,
+	"contains":          stdlib.ContainsFunc,
+	"distinct":          stdlib.DistinctFunc,
+	"divide":            stdlib.DivideFunc,
+	"element":           stdlib.ElementFunc,
+	"equal":             stdlib.EqualFunc,
+	"exec":              execFunc,
+	"flatten":           stdlib.FlattenFunc,
+	"floor":             stdlib.FloorFunc,
+	"format":            stdlib.FormatFunc,
+	"formatdate":        stdlib.FormatDateFunc,
+	"formatlist":        stdlib.FormatListFunc,
+	"indent":            stdlib.IndentFunc,
+	"index":             stdlib.IndexFunc,
+	"int":               stdlib.IntFunc,
+	"join":              stdlib.JoinFunc,
+	"jsondecode":        stdlib.JSONDecodeFunc,
+	"jsonencode":        stdlib.JSONEncodeFunc,
+	"keys":              stdlib.KeysFunc,
+	"log":               stdlib.LogFunc,
+	"length":            stdlib.LengthFunc,
+	"lessthan":          stdlib.LessThanFunc,
+	"lessthanorequalto": stdlib.LessThanOrEqualToFunc,
+	"lookup":            stdlib.LookupFunc,
+	"lower":             stdlib.LowerFunc,
+	"now":               nowFunc,
+	"max":               stdlib.MaxFunc,
+	"merge":             stdlib.MergeFunc,
+	"modulo":            stdlib.ModuloFunc,
+	"min":               stdlib.MinFunc,
+	"multiply":          stdlib.MultiplyFunc,
+	"negate":            stdlib.NegateFunc,
+	"notequal":          stdlib.NotEqualFunc,
+	"not":               stdlib.NotFunc,
+	"or":                stdlib.OrFunc,
+	"parseint":          stdlib.ParseIntFunc,
+	"pow":               stdlib.PowFunc,
+	"quote":             quoteFunc,
+	"range":             stdlib.RangeFunc,
+	"regex":             stdlib.RegexFunc,
+	"regexall":          stdlib.RegexAllFunc,
+	"regex_replace":     stdlib.RegexReplaceFunc,
+	"reverse":           stdlib.ReverseListFunc,
+	"reverselist":       stdlib.ReverseListFunc,
+	"setintersection":   stdlib.SetIntersectionFunc,
+	"setproduct":        stdlib.SetProductFunc,
+	"setsubtract":       stdlib.SetSubtractFunc,
+	"setunion":          stdlib.SetUnionFunc,
 	// TODO add a serial_strategy option that control how serial numbers are generated
 	"serial":     SerialFunction(0x1000),
-	"sha1":       makeStringHashFunction(sha1.New, hex.EncodeToString),
-	"sha256":     makeStringHashFunction(sha256.New, hex.EncodeToString),
-	"sha512":     makeStringHashFunction(sha512.New, hex.EncodeToString),
+	"md5":        crypto.Md5Func,
+	"sha1":       crypto.Sha1Func,
+	"sha256":     crypto.Sha256Func,
+	"sha512":     crypto.Sha512Func,
 	"signum":     stdlib.SignumFunc,
 	"slice":      stdlib.SliceFunc,
 	"sort":       stdlib.SortFunc,
 	"split":      stdlib.SplitFunc,
+	"strlen":     stdlib.StrlenFunc,
 	"strrev":     stdlib.ReverseFunc,
 	"substr":     stdlib.SubstrFunc,
+	"subtract":   stdlib.SubtractFunc,
 	"timeadd":    stdlib.TimeAddFunc,
 	"timeafter":  timeAfterFunc,
 	"title":      stdlib.TitleFunc,
@@ -91,7 +217,11 @@ var stdlibFunctions = map[string]function.Function{
 	"trimprefix": stdlib.TrimPrefixFunc,
 	"trimspace":  stdlib.TrimSpaceFunc,
 	"trimsuffix": stdlib.TrimSuffixFunc,
+	"try":        tryfunc.TryFunc,
 	"upper":      stdlib.UpperFunc,
+	"urlencode":  encoding.URLEncodeFunc,
+	"uuidv4":     uuid.V4Func,
+	"uuidv5":     uuid.V5Func,
 	"values":     stdlib.ValuesFunc,
 	"zipmap":     stdlib.ZipmapFunc,
 }
@@ -145,25 +275,6 @@ func SerialFunction(start int) function.Function {
 	})
 }
 
-func makeStringHashFunction(hf func() hash.Hash, enc func([]byte) string) function.Function {
-	return function.New(&function.Spec{
-		Params: []function.Parameter{
-			{
-				Name: "str",
-				Type: cty.String,
-			},
-		},
-		Type: function.StaticReturnType(cty.String),
-		Impl: func(args []cty.Value, retType cty.Type) (ret cty.Value, err error) {
-			s := args[0].AsString()
-			h := hf()
-			h.Write([]byte(s))
-			rv := enc(h.Sum(nil))
-			return cty.StringVal(rv), nil
-		},
-	})
-}
-
 var quoteFunc = function.New(&function.Spec{
 	Params: []function.Parameter{{
 		Name: "str",
@@ -195,8 +306,36 @@ var timeAfterFunc = function.New(&function.Spec{
 })
 
 var nowFunc = function.New(&function.Spec{
+	Params: []function.Parameter{},
+	Type:   function.StaticReturnType(cty.String),
 	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
 		tm := now().Format(timestampFormat)
 		return cty.StringVal(tm), nil
+	},
+})
+
+var execFunc = function.New(&function.Spec{
+	Params: []function.Parameter{
+		{Name: "command", Type: cty.String},
+	},
+	VarParam: &function.Parameter{Name: "arguments", Type: cty.String},
+	Type:     function.StaticReturnType(cty.String),
+	Impl: func(args []cty.Value, retType cty.Type) (cty.Value, error) {
+		var (
+			buf       bytes.Buffer
+			command   = args[0].AsString()
+			arguments = make([]string, 0, len(args)-1)
+		)
+		for _, a := range args[1:] {
+			arguments = append(arguments, a.AsString())
+		}
+		cmd := exec.Command(command, arguments...)
+		cmd.Stdout = &buf
+		cmd.Stderr = &buf
+		err := cmd.Run()
+		if err != nil {
+			return cty.NilVal, err
+		}
+		return cty.StringVal(buf.String()), nil
 	},
 })

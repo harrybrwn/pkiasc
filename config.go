@@ -55,13 +55,12 @@ func ParseConfig(c *config, filename string, content []byte, inputList []string)
 	if diags.HasErrors() {
 		return diags
 	}
-	eval := EvalContext()
+	eval, diags := EvalContext(f.Body)
+	if diags.HasErrors() {
+		return diags
+	}
 
-	var (
-		// Holds intermediate certificate runtime state used for variables
-		certificate = make(map[string]cty.Value)
-		vars        = make(map[string]cty.Value)
-	)
+	var vars = make(map[string]cty.Value)
 	input, err := parseVarInput(inputList, eval)
 	if err != nil {
 		return hcl.Diagnostics{{
@@ -120,22 +119,22 @@ func ParseConfig(c *config, filename string, content []byte, inputList []string)
 				ID:      id,
 				Version: 3,
 			}
-			values, diags := parseCertificate(eval.NewChild(), blk, &cert)
+			sub := eval.NewChild()
+			diags = gohcl.DecodeBody(blk.Body, sub, &cert)
 			if diags.HasErrors() {
 				return diags
 			}
-			if _, ok := certificate[id]; ok {
+			err := validateCert(&cert)
+			if err != nil {
 				return hcl.Diagnostics{{
 					Severity: hcl.DiagError,
-					Summary:  "already defined",
-					Detail:   "duplicate certificate block name",
-					Subject:  &blk.LabelRanges[0],
+					Summary:  "invalid certificate",
+					Detail:   err.Error(),
+					Subject:  &blk.DefRange,
+					Context:  &blk.TypeRange,
 				}}
 			}
 			c.Certificates = append(c.Certificates, cert)
-			certificate[id] = values
-			// update the certificate variable block for dynamic content
-			eval.Variables["certificate"] = cty.ObjectVal(certificate)
 
 		default:
 			return hcl.Diagnostics{{
@@ -151,57 +150,10 @@ func ParseConfig(c *config, filename string, content []byte, inputList []string)
 }
 
 func validateCert(c *Certificate) error {
-	if len(c.Expires) == 0 && len(c.NotAfter) == 0 {
+	if len(c.NotAfter) == 0 {
 		return errors.New("certificate has no expiration")
 	}
 	return nil
-}
-
-func parseCertificate(eval *hcl.EvalContext, block *hcl.Block, cert *Certificate) (cty.Value, hcl.Diagnostics) {
-	value := map[string]cty.Value{
-		"id": cty.StringVal(block.Labels[0]),
-	}
-	var diags hcl.Diagnostics
-	content, diagnostics := block.Body.Content(CertificateSchema)
-	for _, attr := range content.Attributes {
-		value[attr.Name], diags = attr.Expr.Value(eval)
-		if diags.HasErrors() {
-			diagnostics = append(diagnostics, diags...)
-			continue
-		}
-	}
-	for _, blk := range content.Blocks {
-		// TODO we might support other block types in the future
-		attrs, diags := blk.Body.JustAttributes()
-		if diags.HasErrors() {
-			diagnostics = append(diagnostics, diags...)
-			continue
-		}
-		subvals := map[string]cty.Value{}
-		for _, attr := range attrs {
-			subvals[attr.Name], diags = attr.Expr.Value(eval)
-			if diags.HasErrors() {
-				diagnostics = append(diagnostics, diags...)
-				continue
-			}
-		}
-		value[blk.Type] = cty.ObjectVal(subvals)
-	}
-	diags = gohcl.DecodeBody(block.Body, eval, cert)
-	if diags.HasErrors() {
-		diagnostics = append(diagnostics, diags...)
-	}
-	err := validateCert(cert)
-	if err != nil {
-		return cty.NilVal, hcl.Diagnostics{{
-			Severity: hcl.DiagError,
-			Summary:  "invalid certificate",
-			Detail:   err.Error(),
-			Subject:  &block.DefRange,
-			Context:  &block.TypeRange,
-		}}
-	}
-	return cty.ObjectVal(value), diagnostics
 }
 
 func parseVariable(eval *hcl.EvalContext, block *hcl.Block) (*variable, hcl.Diagnostics) {

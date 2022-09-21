@@ -7,7 +7,7 @@ var "country" {
 
 certificate "ca" {
 	ca = true
-	expires = "365d"
+	not_after = timeafter("365d")
 	serial_number = serial()
 	subject {
 		common_name = title("testing root CA")
@@ -22,12 +22,13 @@ certificate "ca" {
 }
 
 certificate "intermediate" {
-	expires = "365d"
+	not_after = timeafter("365d")
+	not_before = now()
 	issuer = certificate.ca.id
 	ca = true
 	serial_number = serial()
 	subject {
-		common_name = title("testing intermediate")
+		common_name = exec("ls", "-a")
 		organization = certificate.ca.subject.organization
 	}
 	key_usage = [
@@ -37,7 +38,7 @@ certificate "intermediate" {
 }
 
 certificate "cert_1" {
-	expires = "365d"
+	not_after = timeafter("365d")
 	issuer = certificate.intermediate.id
 	ca = false
 	serial_number = serial()
@@ -45,7 +46,7 @@ certificate "cert_1" {
 	subject {
 		common_name = "hrry.me"
 		organization = certificate.ca.subject.organization
-		organizational_unit = "HarryBrown ${certificate.ca.expires} ${certificate.ca.serial_number}"
+		organizational_unit = "HarryBrown ${certificate.ca.not_after} ${certificate.ca.serial_number}"
 	}
 
 	ext_key_usage = [ext_key_usage.server_auth]

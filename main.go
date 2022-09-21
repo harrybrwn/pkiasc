@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -19,7 +20,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"gopkg.hrry.dev/pkiasc/internal/times"
 )
 
 func main() {
@@ -72,6 +72,7 @@ func NewRootCmd() *cobra.Command {
 }
 
 func newInitCmd(config *config) *cobra.Command {
+	var overwrite bool
 	c := cobra.Command{
 		Use:   "init",
 		Short: "Initialize a new certificate store.",
@@ -83,12 +84,13 @@ func newInitCmd(config *config) *cobra.Command {
 			if err = store.validate(); err != nil {
 				return err
 			}
-			if err = store.init(); err != nil {
+			if err = store.init(overwrite); err != nil {
 				return err
 			}
 			return nil
 		},
 	}
+	c.Flags().BoolVarP(&overwrite, "overwrite", "O", overwrite, "overwrite all existing certificates and keys")
 	return &c
 }
 
@@ -135,6 +137,7 @@ type Certificate struct {
 	// Configuration metadata
 	ID       string `json:"id" hcl:"id,label"`
 	IssuerID string `json:"issuer" hcl:"issuer,optional"`
+	KeyFile  string `json:"key_file" hcl:"key_file,optional"`
 
 	// CSR template options
 	Version      int     `json:"version" hcl:"version,optional"`
@@ -143,7 +146,6 @@ type Certificate struct {
 	CA           bool    `json:"ca" hcl:"ca,optional"`
 	MaxPathLen   int     `json:"max_path_len,omitempty" hcl:"max_path_len,optional"`
 
-	Expires   string `json:"expires,omitempty" hcl:"expires,optional"`
 	NotAfter  string `json:"not_after" hcl:"not_after,optional"`
 	NotBefore string `json:"not_before" hcl:"not_before,optional"`
 
@@ -175,8 +177,7 @@ type Subject struct {
 func (crt *Certificate) subject() pkix.Name {
 	s := crt.Subject
 	subj := pkix.Name{
-		SerialNumber: crt.SerialNumber,
-		CommonName:   s.CommonName,
+		CommonName: s.CommonName,
 	}
 	if len(s.Organization) > 0 {
 		subj.Organization = append(subj.Organization, s.Organization)
@@ -217,18 +218,19 @@ type issuer struct {
 
 func (s *store) validate() error {
 	for _, cert := range s.roots {
-		if cert.Expires == "" && cert.NotAfter == "" {
+		if cert.NotAfter == "" {
 			return errors.New("empty expiration date")
 		}
 	}
 	return nil
 }
 
-func (s *store) init() error {
+func (s *store) init(overwrite bool) error {
 	err := os.MkdirAll(s.dir, 0744)
 	if err != nil && !os.IsExist(err) {
 		return err
 	}
+	sha1Hash := sha1.New()
 	for _, cert := range s.roots {
 		caPath := filepath.Join(s.dir, cert.ID)
 		keyPath := filepath.Join(s.dir, cert.ID, fmt.Sprintf("%s.key", cert.ID))
@@ -237,7 +239,7 @@ func (s *store) init() error {
 		if err != nil && !os.IsExist(err) {
 			return err
 		}
-		if exists(crtFile) {
+		if exists(crtFile) && !overwrite {
 			crt, err := OpenCertificate(crtFile)
 			if err != nil {
 				return err
@@ -258,6 +260,17 @@ func (s *store) init() error {
 		if err != nil {
 			return err
 		}
+		pubBytes, err := asn1.Marshal(key.PublicKey)
+		if err != nil {
+			return err
+		}
+		sha1Hash.Reset()
+		_, err = sha1Hash.Write(pubBytes)
+		if err != nil {
+			return err
+		}
+		template.AuthorityKeyId = sha1Hash.Sum(nil)
+
 		derBytes, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
 		if err != nil {
 			return err
@@ -274,7 +287,8 @@ func (s *store) init() error {
 	for _, cert := range s.certs {
 		crtPath := filepath.Join(s.dir, fmt.Sprintf("%s.pem", cert.ID))
 		keyPath := filepath.Join(s.dir, fmt.Sprintf("%s.key", cert.ID))
-		if exists(crtPath) && exists(keyPath) {
+		if exists(crtPath) && exists(keyPath) && !overwrite {
+			fmt.Println("already exists", crtPath)
 			continue
 		}
 		issuer, ok := s.issuers[cert.IssuerID]
@@ -311,20 +325,11 @@ func newTemplate(cert *Certificate) (*x509.Certificate, error) {
 	if cert.NotBefore == "" {
 		notBefore = time.Now()
 	}
-	if len(cert.NotAfter) > 0 && len(cert.Expires) > 0 {
-		return nil, errors.New("can't have both expires and not_after")
-	}
 	if len(cert.NotAfter) > 0 {
 		notAfter, err = time.Parse(timestampFormat, cert.NotAfter)
 		if err != nil {
 			return nil, err
 		}
-	} else if len(cert.Expires) > 0 {
-		d, err := times.ParseDuration(cert.Expires)
-		if err != nil {
-			return nil, err
-		}
-		notAfter = time.Now().Add(d)
 	}
 
 	serial, ok := new(big.Int).SetString(cert.SerialNumber, 16)
