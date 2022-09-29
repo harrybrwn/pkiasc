@@ -25,7 +25,7 @@ func OpenCertificate(filename string) (*x509.Certificate, error) {
 	return x509.ParseCertificate(block.Bytes)
 }
 
-func OpenKey(filename string) (crypto.PrivateKey, error) {
+func OpenKey(filename string) (crypto.Signer, error) {
 	f, err := os.Open(filename)
 	if err != nil {
 		return nil, err

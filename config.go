@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"strconv"
@@ -26,6 +27,8 @@ var (
 	}
 	CertificateSchema, _ = gohcl.ImpliedBodySchema(&Certificate{})
 )
+
+const defaultKeySize = 2048
 
 type config struct {
 	Store        string        `json:"store" hcl:"store"`
@@ -78,12 +81,16 @@ func ParseConfig(c *config, filename string, content []byte, inputList []string)
 		if diags.HasErrors() {
 			return diags
 		}
+	} else if c.KeySize == 0 {
+		c.KeySize = defaultKeySize
 	}
 	if attr, ok := bodyContent.Attributes["store"]; ok {
 		diags = gohcl.DecodeExpression(attr.Expr, eval, &c.Store)
 		if diags.HasErrors() {
 			return diags
 		}
+	} else if c.Store == "" {
+		c.Store = "."
 	}
 
 	for _, blk := range bodyContent.Blocks {
@@ -123,6 +130,7 @@ func ParseConfig(c *config, filename string, content []byte, inputList []string)
 			if diags.HasErrors() {
 				return diags
 			}
+			initCertDefaults(&cert)
 			err := validateCert(&cert)
 			if err != nil {
 				return hcl.Diagnostics{{
@@ -152,7 +160,24 @@ func validateCert(c *Certificate) error {
 	if len(c.NotAfter) == 0 {
 		return errors.New("certificate has no expiration")
 	}
+	sigAlg := parseSignatureAlgorithm(c.SignatureAlgorithm)
+	pkAlg := parsePublicKeyAlgorithm(c.PublicKeyAlgorithm)
+	if sigAlg == x509.UnknownSignatureAlgorithm {
+		return fmt.Errorf("unknown signature algorithm %q", c.SignatureAlgorithm)
+	}
+	if pkAlg == x509.UnknownPublicKeyAlgorithm {
+		return fmt.Errorf("unknown public key algorithm %q", c.PublicKeyAlgorithm)
+	}
 	return nil
+}
+
+func initCertDefaults(c *Certificate) {
+	if c.PublicKeyAlgorithm == "" {
+		c.PublicKeyAlgorithm = "rsa"
+	}
+	if c.SignatureAlgorithm == "" {
+		c.SignatureAlgorithm = "sha256-rsa"
+	}
 }
 
 func parseVariable(eval *hcl.EvalContext, block *hcl.Block) (*variable, hcl.Diagnostics) {

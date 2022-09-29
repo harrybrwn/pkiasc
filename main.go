@@ -4,7 +4,6 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha1"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -17,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -118,9 +118,10 @@ func newStore(c *config) *store {
 	s := store{
 		dir:     c.Store,
 		keySize: c.KeySize,
+		hash:    crypto.SHA1, // used as default
 		roots:   make(map[string]Certificate),
 		certs:   make([]Certificate, 0, len(c.Certificates)),
-		issuers: make(map[string]issuer),
+		issuers: make(map[string]KeyPair),
 	}
 	for _, cert := range c.Certificates {
 		if cert.CA || len(cert.IssuerID) == 0 {
@@ -145,6 +146,9 @@ type Certificate struct {
 	Subject      Subject `json:"subject" hcl:"subject,block"`
 	CA           bool    `json:"ca" hcl:"ca,optional"`
 	MaxPathLen   int     `json:"max_path_len,omitempty" hcl:"max_path_len,optional"`
+
+	SignatureAlgorithm string `json:"signature_algorithm" hcl:"signature_algorithm,optional"`
+	PublicKeyAlgorithm string `json:"public_key_algorithm" hcl:"public_key_algorithm,optional"`
 
 	NotAfter  string `json:"not_after" hcl:"not_after,optional"`
 	NotBefore string `json:"not_before" hcl:"not_before,optional"`
@@ -206,14 +210,15 @@ func (crt *Certificate) subject() pkix.Name {
 type store struct {
 	dir     string
 	keySize uint64
+	hash    crypto.Hash
 	certs   []Certificate
 	roots   map[string]Certificate
-	issuers map[string]issuer
+	issuers map[string]KeyPair
 }
 
-type issuer struct {
-	crt *x509.Certificate
-	key crypto.PrivateKey
+type KeyPair struct {
+	Cert *x509.Certificate
+	Key  crypto.Signer
 }
 
 func (s *store) validate() error {
@@ -230,15 +235,10 @@ func (s *store) init(overwrite bool) error {
 	if err != nil && !os.IsExist(err) {
 		return err
 	}
-	sha1Hash := sha1.New()
+	hash := s.hash.New()
 	for _, cert := range s.roots {
-		caPath := filepath.Join(s.dir, cert.ID)
-		keyPath := filepath.Join(s.dir, cert.ID, fmt.Sprintf("%s.key", cert.ID))
-		crtFile := filepath.Join(s.dir, cert.ID, fmt.Sprintf("%s.crt", cert.ID))
-		err = os.Mkdir(caPath, 0744)
-		if err != nil && !os.IsExist(err) {
-			return err
-		}
+		keyPath := filepath.Join(s.dir, fmt.Sprintf("%s.key", cert.ID))
+		crtFile := filepath.Join(s.dir, fmt.Sprintf("%s.crt", cert.ID))
 		if exists(crtFile) && !overwrite {
 			crt, err := OpenCertificate(crtFile)
 			if err != nil {
@@ -248,7 +248,7 @@ func (s *store) init(overwrite bool) error {
 			if err != nil {
 				return err
 			}
-			s.issuers[cert.ID] = issuer{crt: crt, key: k}
+			s.issuers[cert.ID] = KeyPair{Cert: crt, Key: k}
 			continue
 		}
 
@@ -264,18 +264,24 @@ func (s *store) init(overwrite bool) error {
 		if err != nil {
 			return err
 		}
-		sha1Hash.Reset()
-		_, err = sha1Hash.Write(pubBytes)
+		hash.Reset()
+		_, err = hash.Write(pubBytes)
 		if err != nil {
 			return err
 		}
-		template.AuthorityKeyId = sha1Hash.Sum(nil)
+		template.AuthorityKeyId = hash.Sum(nil)
 
-		derBytes, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+		derBytes, err := x509.CreateCertificate(
+			rand.Reader,
+			template,
+			template,
+			&key.PublicKey,
+			key,
+		)
 		if err != nil {
 			return err
 		}
-		s.issuers[cert.ID] = issuer{crt: template, key: key}
+		s.issuers[cert.ID] = KeyPair{Cert: template, Key: key}
 		if err = WriteCertificate(crtFile, derBytes); err != nil {
 			return err
 		}
@@ -285,7 +291,7 @@ func (s *store) init(overwrite bool) error {
 	}
 
 	for _, cert := range s.certs {
-		crtPath := filepath.Join(s.dir, fmt.Sprintf("%s.pem", cert.ID))
+		crtPath := filepath.Join(s.dir, fmt.Sprintf("%s.crt", cert.ID))
 		keyPath := filepath.Join(s.dir, fmt.Sprintf("%s.key", cert.ID))
 		if exists(crtPath) && exists(keyPath) && !overwrite {
 			fmt.Println("already exists", crtPath)
@@ -303,7 +309,13 @@ func (s *store) init(overwrite bool) error {
 		if err != nil {
 			return err
 		}
-		derBytes, err := x509.CreateCertificate(rand.Reader, template, issuer.crt, &key.PublicKey, issuer.key)
+		derBytes, err := x509.CreateCertificate(
+			rand.Reader,
+			template,
+			issuer.Cert,
+			&key.PublicKey,
+			issuer.Key,
+		)
 		if err != nil {
 			return err
 		}
@@ -355,23 +367,78 @@ func newTemplate(cert *Certificate) (*x509.Certificate, error) {
 		uris = append(uris, u)
 	}
 
+	signAlg := parseSignatureAlgorithm(cert.SignatureAlgorithm)
+	pkAlg := parsePublicKeyAlgorithm(cert.PublicKeyAlgorithm)
+	if signAlg == x509.UnknownSignatureAlgorithm {
+		return nil, fmt.Errorf("unknown signature algorithm %q", cert.SignatureAlgorithm)
+	}
+	if pkAlg == x509.UnknownPublicKeyAlgorithm {
+		return nil, fmt.Errorf("unknown public key algorithm %q", cert.PublicKeyAlgorithm)
+	}
+
 	return &x509.Certificate{
 		Version:               cert.Version,
 		IsCA:                  cert.CA,
+		MaxPathLen:            cert.MaxPathLen,
+		MaxPathLenZero:        cert.CA && cert.MaxPathLen <= 0,
 		BasicConstraintsValid: cert.CA,
 		SerialNumber:          serial,
+		PublicKeyAlgorithm:    pkAlg,
+		SignatureAlgorithm:    signAlg,
 		Subject:               cert.subject(),
 		NotBefore:             notBefore,
 		NotAfter:              notAfter,
 		KeyUsage:              usage,
 		ExtKeyUsage:           cert.ExtKeyUsage,
 		DNSNames:              cert.DNS,
-		IPAddresses:           ips,
 		EmailAddresses:        cert.Email,
+		IPAddresses:           ips,
 		URIs:                  uris,
+		OCSPServer:            cert.OCSP,
+		IssuingCertificateURL: cert.IssuingCertificateURL,
 		CRLDistributionPoints: cert.CRLDistributionPoints,
 		PolicyIdentifiers:     cert.PolicyIdentifiers,
 	}, nil
+}
+
+func parseSignatureAlgorithm(name string) x509.SignatureAlgorithm {
+	switch strings.ToLower(name) {
+	case "sha256-rsa":
+		return x509.SHA256WithRSA
+	case "sha384-rsa":
+		return x509.SHA384WithRSA
+	case "sha512-rsa":
+		return x509.SHA512WithRSA
+	case "sha256-ecdsa":
+		return x509.ECDSAWithSHA256
+	case "sha384-ecdsa":
+		return x509.ECDSAWithSHA384
+	case "sha512-ecdsa":
+		return x509.ECDSAWithSHA512
+	case "ed25519":
+		return x509.PureEd25519
+	case "sha256-rsapss":
+		return x509.SHA256WithRSAPSS
+	case "sha384-rsapss":
+		return x509.SHA384WithRSAPSS
+	case "sha512-rsapss":
+		return x509.SHA512WithRSAPSS
+	default:
+		return x509.UnknownSignatureAlgorithm
+	}
+}
+
+func parsePublicKeyAlgorithm(name string) x509.PublicKeyAlgorithm {
+	switch strings.ToLower(name) {
+	case "rsa":
+		return x509.RSA
+	case "ecdsa":
+		return x509.ECDSA
+	case "ed25519":
+		return x509.Ed25519
+	default:
+		return x509.UnknownPublicKeyAlgorithm
+	}
 }
 
 func exists(pathname string) bool {

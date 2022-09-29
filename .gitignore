@@ -1,1 +1,3 @@
 testdata/store/
+testdata/gen.sh
+testdata/openssl.cnf

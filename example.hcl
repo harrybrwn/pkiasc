@@ -21,6 +21,10 @@ certificate "ca" {
 		key_usage.digital_signatures,
 		key_usage.cert_sign,
 	]
+	# Default: "sha256-rsa"
+	signature_algorithm = "sha256-rsa"
+	# Default: "rsa"
+	public_key_algorithm = "rsa"
 }
 
 certificate "intermediate" {
@@ -52,6 +56,9 @@ certificate "cert_1" {
 		"jimmy.me",
 		"*.jimmy.me",
 	]
+	ocsp = [
+		"http://ocsp:9988/"
+	]
 }
 
 certificate "ocsp" {
@@ -67,7 +74,4 @@ certificate "ocsp" {
 		common_name  = "ocsp.default.svc.cluster.local"
 		organization = certificate.ca.subject.organization
 	}
-	ocsp = [
-		"http://ocsp:9988/"
-	]
 }

@@ -19,6 +19,8 @@ certificate "ca" {
 		key_usage.digital_signatures,
 		key_usage.cert_sign,
 	]
+	signature_algorithm = "sha256-rsa"
+	public_key_algorithm = "rsa"
 }
 
 certificate "intermediate" {

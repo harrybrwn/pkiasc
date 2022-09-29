@@ -8,8 +8,10 @@ Manage TLS certificates with a declarative plaintext interface.
 store = "./certificates"
 keysize = 2048
 
-var "org_name" {
-    default = "un-named org"
+var "org_name" {}
+
+var "ocsp_url" {
+    default = "http://localhost:8888"
 }
 
 certificate "ca" {
@@ -23,6 +25,7 @@ certificate "ca" {
         key_usage.digital_signatures,
         key_usage.cert_sign,
     ]
+    ocsp = [var.ocsp_url]
 }
 
 certificate "my_client" {
@@ -36,6 +39,7 @@ certificate "my_client" {
     ext_key_usage = [
         ext_key_usage.client_auth
     ]
+    ocsp = [var.ocsp_url]
 }
 ```
 

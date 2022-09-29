@@ -53,6 +53,7 @@ certificate "ca" {
 		organization = upper("test org")
 	}
 	key_usage = [key_usage.digital_signatures, key_usage.cert_sign]
+	public_key_algorithm = "rsa"
 }
 certificate "cert_1" {
 	issuer        = certificate.ca.id
@@ -65,6 +66,7 @@ certificate "cert_1" {
 	}
 	ext_key_usage = [ext_key_usage.server_auth]
 	dns = ["jimmy.me", "*.jimmy.me"]
+	signature_algorithm = "sha256-rsa"
 }
 `), []string{"not_before=1mo5m35ms"})
 	if diags.HasErrors() {
