@@ -6,9 +6,23 @@ var "country" {
 }
 
 certificate "ca" {
-	ca            = true
-	not_after     = timeafter("365d")
-	not_before    = now()
+	# ca - marks the certificate as a Certificate Authority
+	#
+	# Default: false
+	ca = true
+	# path_len - set the pathlen in the certificate
+	path_len = 0
+	# not_after - certificate expiration date timestamp
+	#
+	# Default: ""
+	not_after = timeafter("365d")
+	# not_before - date that the certificate starts being valid
+	#
+	# Default: current date-time
+	not_before = now()
+	# serial_number - hex number used for cert serial number
+	#
+	# Default: ""
 	serial_number = serial()
 
 	subject {
@@ -17,18 +31,37 @@ certificate "ca" {
 		organizational_unit = env.USER
 		country             = title(var.country)
 	}
+	# key_usage - key usage
+	#
+	# Default: []
 	key_usage = [
 		key_usage.digital_signatures,
 		key_usage.cert_sign,
 	]
+	# ext_key_usage - extended key usage
+	#
+	# Default: []
+	ext_key_usage = []
+	# signature_algorithm - algorithm to be used for generating the certificate
+	# signagure
+	#
 	# Default: "sha256-rsa"
 	signature_algorithm = "sha256-rsa"
+	# public_key_algorithm - encryption algorithm of the certificate's public
+	# key
+	#
 	# Default: "rsa"
 	public_key_algorithm = "rsa"
 }
 
 certificate "intermediate" {
+	# issuer - reference to the certificate ID to be used as the certificate
+	# issuer.
+	#
+	# Default: ""
 	issuer        = certificate.ca.id
+	# path_len - set the pathlen in the certificate
+	path_len      = 0
 	ca            = true
 	serial_number = "ff93ac"
 	not_after     = timeafter("2y1mo35ms")

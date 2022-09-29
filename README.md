@@ -2,7 +2,8 @@
 Manage TLS certificates with a declarative plaintext interface.
 
 ## Setup
-1. Write the configuration in `pki.hcl`.
+1. Write the configuration in `pki.hcl`. See [example.hcl](/example.hcl) for
+in-depth examples and documentation.
 
 ```hcl
 store = "./certificates"
@@ -33,7 +34,7 @@ certificate "my_client" {
     serial_number = serial()
     not_after     = timeafter("6mo48h")
     subject {
-    common_name  = "Jimmy's Client Certificate"
+        common_name  = "Jimmy's Client Certificate"
         organization = certificate.ca.subject.organization
     }
     ext_key_usage = [

@@ -67,6 +67,7 @@ func NewRootCmd() *cobra.Command {
 	c.AddCommand(
 		newInitCmd(&config),
 		newConfigCmd(&config),
+		newCleanCmd(&config),
 	)
 	return &c
 }
@@ -114,6 +115,17 @@ func newConfigCmd(config *config) *cobra.Command {
 	return &c
 }
 
+func newCleanCmd(config *config) *cobra.Command {
+	c := cobra.Command{
+		Use:   "clean",
+		Short: "Remove all certificates",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return os.RemoveAll(config.Store)
+		},
+	}
+	return &c
+}
+
 func newStore(c *config) *store {
 	s := store{
 		dir:     c.Store,
@@ -145,7 +157,7 @@ type Certificate struct {
 	SerialNumber string  `json:"serial_number" hcl:"serial_number,optional"`
 	Subject      Subject `json:"subject" hcl:"subject,block"`
 	CA           bool    `json:"ca" hcl:"ca,optional"`
-	MaxPathLen   int     `json:"max_path_len,omitempty" hcl:"max_path_len,optional"`
+	MaxPathLen   *int    `json:"path_len,omitempty" hcl:"path_len,optional"`
 
 	SignatureAlgorithm string `json:"signature_algorithm" hcl:"signature_algorithm,optional"`
 	PublicKeyAlgorithm string `json:"public_key_algorithm" hcl:"public_key_algorithm,optional"`
@@ -336,6 +348,11 @@ func newTemplate(cert *Certificate) (*x509.Certificate, error) {
 	)
 	if cert.NotBefore == "" {
 		notBefore = time.Now()
+	} else {
+		notBefore, err = time.Parse(timestampFormat, cert.NotBefore)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if len(cert.NotAfter) > 0 {
 		notAfter, err = time.Parse(timestampFormat, cert.NotAfter)
@@ -376,12 +393,10 @@ func newTemplate(cert *Certificate) (*x509.Certificate, error) {
 		return nil, fmt.Errorf("unknown public key algorithm %q", cert.PublicKeyAlgorithm)
 	}
 
-	return &x509.Certificate{
+	template := &x509.Certificate{
 		Version:               cert.Version,
 		IsCA:                  cert.CA,
-		MaxPathLen:            cert.MaxPathLen,
-		MaxPathLenZero:        cert.CA && cert.MaxPathLen <= 0,
-		BasicConstraintsValid: cert.CA,
+		BasicConstraintsValid: cert.CA, // TODO not sure about this
 		SerialNumber:          serial,
 		PublicKeyAlgorithm:    pkAlg,
 		SignatureAlgorithm:    signAlg,
@@ -398,7 +413,12 @@ func newTemplate(cert *Certificate) (*x509.Certificate, error) {
 		IssuingCertificateURL: cert.IssuingCertificateURL,
 		CRLDistributionPoints: cert.CRLDistributionPoints,
 		PolicyIdentifiers:     cert.PolicyIdentifiers,
-	}, nil
+	}
+	if cert.MaxPathLen != nil {
+		template.MaxPathLen = *cert.MaxPathLen
+		template.MaxPathLenZero = *cert.MaxPathLen == 0
+	}
+	return template, nil
 }
 
 func parseSignatureAlgorithm(name string) x509.SignatureAlgorithm {

@@ -1,3 +1,19 @@
 testdata/store/
 testdata/gen.sh
 testdata/openssl.cnf
+
+# Test Data
+*.log
+*.crt
+*.key
+*.csr
+*.pem
+*.srl
+index.txt
+index.txt.old
+index.txt.attr
+index.txt.attr.old
+ca.srl
+ca.srl.old
+crlnumber
+gocoverage.txt
