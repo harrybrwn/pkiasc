@@ -39,8 +39,14 @@ func OpenKey(filename string) (crypto.Signer, error) {
 	switch block.Type {
 	case "RSA PRIVATE KEY":
 		return x509.ParsePKCS1PrivateKey(block.Bytes)
+	case "PRIVATE KEY":
+		k, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		return k.(crypto.Signer), nil
 	default:
-		return nil, errors.New("unkonwn private key type")
+		return nil, errors.New("unknown private key type")
 	}
 }
 

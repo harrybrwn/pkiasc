@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto"
+	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -151,8 +152,9 @@ type Certificate struct {
 	ID       string `json:"id" hcl:"id,label"`
 	IssuerID string `json:"issuer" hcl:"issuer,optional"`
 	KeyFile  string `json:"key_file" hcl:"key_file,optional"`
+	CertFile string `json:"cert_file" hcl:"cert_file,optional"`
 
-	// CSR template options
+	// Template options
 	Version      int     `json:"version" hcl:"version,optional"`
 	SerialNumber string  `json:"serial_number" hcl:"serial_number,optional"`
 	Subject      Subject `json:"subject" hcl:"subject,block"`
@@ -177,6 +179,9 @@ type Certificate struct {
 	IssuingCertificateURL []string                `json:"issuing_cert_url" hcl:"issuing_cert_url,optional"`
 	CRLDistributionPoints []string                `json:"crl_distribution_points" hcl:"crl_distribution_points,optional"`
 	PolicyIdentifiers     []asn1.ObjectIdentifier `json:"policy_identifiers" hcl:"policy_identifiers,optional"`
+
+	cert *x509.Certificate
+	key  crypto.Signer
 }
 
 type Subject struct {
@@ -235,6 +240,9 @@ type KeyPair struct {
 
 func (s *store) validate() error {
 	for _, cert := range s.roots {
+		if cert.cert != nil {
+			continue
+		}
 		if cert.NotAfter == "" {
 			return errors.New("empty expiration date")
 		}
@@ -264,15 +272,26 @@ func (s *store) init(overwrite bool) error {
 			continue
 		}
 
+		var key crypto.Signer
+		if cert.key != nil {
+			key = cert.key
+		} else {
+			key, err = rsa.GenerateKey(rand.Reader, int(s.keySize))
+			if err != nil {
+				return err
+			}
+		}
+		if cert.cert != nil {
+			s.issuers[cert.ID] = KeyPair{Cert: cert.cert, Key: cert.key}
+			continue
+		}
+
 		template, err := newTemplate(&cert)
 		if err != nil {
 			return fmt.Errorf("failed to create certificate template: %w", err)
 		}
-		key, err := rsa.GenerateKey(rand.Reader, int(s.keySize))
-		if err != nil {
-			return err
-		}
-		pubBytes, err := asn1.Marshal(key.PublicKey)
+		pubKey := getPublicKey(key)
+		pubBytes, err := asn1.Marshal(pubKey)
 		if err != nil {
 			return err
 		}
@@ -287,7 +306,7 @@ func (s *store) init(overwrite bool) error {
 			rand.Reader,
 			template,
 			template,
-			&key.PublicKey,
+			getPublicKeyPtr(key),
 			key,
 		)
 		if err != nil {
@@ -309,6 +328,16 @@ func (s *store) init(overwrite bool) error {
 			fmt.Println("already exists", crtPath)
 			continue
 		}
+		var key crypto.Signer
+		if cert.key != nil {
+			key = cert.key
+		} else {
+			key, err = rsa.GenerateKey(rand.Reader, int(s.keySize))
+			if err != nil {
+				return err
+			}
+		}
+
 		issuer, ok := s.issuers[cert.IssuerID]
 		if !ok {
 			return fmt.Errorf("could not find issuer %q", cert.IssuerID)
@@ -317,15 +346,11 @@ func (s *store) init(overwrite bool) error {
 		if err != nil {
 			return err
 		}
-		key, err := rsa.GenerateKey(rand.Reader, int(s.keySize))
-		if err != nil {
-			return err
-		}
 		derBytes, err := x509.CreateCertificate(
 			rand.Reader,
 			template,
 			issuer.Cert,
-			&key.PublicKey,
+			getPublicKeyPtr(key),
 			issuer.Key,
 		)
 		if err != nil {
@@ -458,6 +483,28 @@ func parsePublicKeyAlgorithm(name string) x509.PublicKeyAlgorithm {
 		return x509.Ed25519
 	default:
 		return x509.UnknownPublicKeyAlgorithm
+	}
+}
+
+func getPublicKey(key crypto.Signer) crypto.PublicKey {
+	switch k := key.(type) {
+	case *rsa.PrivateKey:
+		return k.PublicKey
+	case *ecdsa.PrivateKey:
+		return k.PublicKey
+	default:
+		return nil
+	}
+}
+
+func getPublicKeyPtr(key crypto.Signer) crypto.PublicKey {
+	switch k := key.(type) {
+	case *rsa.PrivateKey:
+		return &k.PublicKey
+	case *ecdsa.PrivateKey:
+		return &k.PublicKey
+	default:
+		return nil
 	}
 }
 

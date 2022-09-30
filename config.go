@@ -126,8 +126,52 @@ func ParseConfig(c *config, filename string, content []byte, inputList []string)
 				Version: 3,
 			}
 			sub := eval.NewChild()
+			// attrs, diags := blk.Body.JustAttributes()
+			content, diags := blk.Body.Content(CertificateSchema)
+			if diags.HasErrors() {
+				fmt.Println("failed to get just attributes")
+				return diags
+			}
+
+			if keyFileAttr, ok := content.Attributes["key_file"]; ok {
+				val, diags := keyFileAttr.Expr.Value(sub)
+				if diags.HasErrors() {
+					return diags
+				}
+				cert.key, err = OpenKey(val.AsString())
+				if err != nil {
+					return hcl.Diagnostics{{
+						Severity: hcl.DiagError,
+						Summary:  err.Error(),
+						Detail:   "failed to read private key file",
+						Subject:  &keyFileAttr.NameRange,
+						Context:  &keyFileAttr.Range,
+					}}
+				}
+			}
+			if certFileAttr, ok := content.Attributes["cert_file"]; ok {
+				val, diags := certFileAttr.Expr.Value(sub)
+				if diags.HasErrors() {
+					return diags
+				}
+				cert.cert, err = OpenCertificate(val.AsString())
+				if err != nil {
+					return hcl.Diagnostics{{
+						Severity: hcl.DiagError,
+						Summary:  err.Error(),
+						Detail:   "failed to read certificate file",
+						Subject:  &certFileAttr.NameRange,
+						Context:  &certFileAttr.Range,
+					}}
+				}
+				cert.CA = cert.cert.IsCA
+				c.Certificates = append(c.Certificates, cert)
+				continue
+			}
+
 			diags = gohcl.DecodeBody(blk.Body, sub, &cert)
 			if diags.HasErrors() {
+				fmt.Println("decode body failed")
 				return diags
 			}
 			initCertDefaults(&cert)
