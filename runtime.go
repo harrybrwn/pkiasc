@@ -69,6 +69,7 @@ func EvalContext(body hcl.Body) (*hcl.EvalContext, hcl.Diagnostics) {
 					Context:  &block.DefRange,
 				}}
 			}
+
 			cert["id"] = cty.StringVal(id)
 			for _, attr := range content.Attributes {
 				if !isConstExpr(attr.Expr) {

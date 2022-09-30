@@ -126,7 +126,6 @@ func ParseConfig(c *config, filename string, content []byte, inputList []string)
 				Version: 3,
 			}
 			sub := eval.NewChild()
-			// attrs, diags := blk.Body.JustAttributes()
 			content, diags := blk.Body.Content(CertificateSchema)
 			if diags.HasErrors() {
 				fmt.Println("failed to get just attributes")

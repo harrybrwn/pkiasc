@@ -101,7 +101,7 @@ certificate "intermediate" {
 	# issuer.
 	#
 	# Default: ""
-	issuer        = certificate.ca.id
+	issuer = certificate.alt_ca.id
 	# path_len - set the pathlen in the certificate
 	path_len      = 0
 	ca            = true

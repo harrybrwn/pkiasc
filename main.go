@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"math/big"
 	"net"
@@ -257,6 +258,7 @@ func (s *store) init(overwrite bool) error {
 	}
 	hash := s.hash.New()
 	for _, cert := range s.roots {
+		fmt.Println("issuer", cert.ID)
 		keyPath := filepath.Join(s.dir, fmt.Sprintf("%s.key", cert.ID))
 		crtFile := filepath.Join(s.dir, fmt.Sprintf("%s.crt", cert.ID))
 		if exists(crtFile) && !overwrite {
@@ -290,24 +292,28 @@ func (s *store) init(overwrite bool) error {
 		if err != nil {
 			return fmt.Errorf("failed to create certificate template: %w", err)
 		}
-		pubKey := getPublicKey(key)
-		pubBytes, err := asn1.Marshal(pubKey)
+
+		issuerKey := key
+		issuerCert := template
+		if cert.IssuerID != "" {
+			issuer, ok := s.issuers[cert.IssuerID]
+			if !ok {
+				return fmt.Errorf("could not find issuer %q", cert.IssuerID)
+			}
+			issuerKey = issuer.Key
+			issuerCert = issuer.Cert
+		}
+		template.AuthorityKeyId, err = hashPublicKeyFromPrivateKey(hash, issuerKey)
 		if err != nil {
 			return err
 		}
-		hash.Reset()
-		_, err = hash.Write(pubBytes)
-		if err != nil {
-			return err
-		}
-		template.AuthorityKeyId = hash.Sum(nil)
 
 		derBytes, err := x509.CreateCertificate(
 			rand.Reader,
 			template,
-			template,
+			issuerCert,
 			getPublicKeyPtr(key),
-			key,
+			issuerKey,
 		)
 		if err != nil {
 			return err
@@ -486,17 +492,6 @@ func parsePublicKeyAlgorithm(name string) x509.PublicKeyAlgorithm {
 	}
 }
 
-func getPublicKey(key crypto.Signer) crypto.PublicKey {
-	switch k := key.(type) {
-	case *rsa.PrivateKey:
-		return k.PublicKey
-	case *ecdsa.PrivateKey:
-		return k.PublicKey
-	default:
-		return nil
-	}
-}
-
 func getPublicKeyPtr(key crypto.Signer) crypto.PublicKey {
 	switch k := key.(type) {
 	case *rsa.PrivateKey:
@@ -506,6 +501,29 @@ func getPublicKeyPtr(key crypto.Signer) crypto.PublicKey {
 	default:
 		return nil
 	}
+}
+
+func hashPublicKeyFromPrivateKey(hash hash.Hash, key crypto.PrivateKey) ([]byte, error) {
+	hash.Reset()
+	var pub crypto.PublicKey
+	switch k := key.(type) {
+	case *rsa.PrivateKey:
+		pub = k.PublicKey
+	case *ecdsa.PrivateKey:
+		pub = k.PublicKey
+	default:
+		return nil, errors.New("failed to find public key")
+	}
+	pubBytes, err := asn1.Marshal(pub)
+	if err != nil {
+		return nil, err
+	}
+	_, err = hash.Write(pubBytes)
+	if err != nil {
+		return nil, err
+	}
+	h := hash.Sum(nil)
+	return h, nil
 }
 
 func exists(pathname string) bool {

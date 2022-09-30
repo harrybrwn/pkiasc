@@ -39,6 +39,7 @@ func TestConfig(t *testing.T) {
 		date = time.Date(2000, time.January, 1, 2, 4, 6, 8, time.UTC)
 	)
 	now = func() time.Time { return date }
+	defer func() { now = time.Now }()
 	diags := ParseConfig(&c, "test.hcl", []byte(`
 store = "./testdata/TestConfig"
 keysize = 1024
