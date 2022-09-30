@@ -133,14 +133,14 @@ func newStore(c *config) *store {
 		dir:     c.Store,
 		keySize: c.KeySize,
 		hash:    crypto.SHA1, // used as default
-		roots:   make(map[string]Certificate),
+		roots:   make([]Certificate, 0),
 		certs:   make([]Certificate, 0, len(c.Certificates)),
 		issuers: make(map[string]KeyPair),
 	}
 	for _, cert := range c.Certificates {
 		if cert.CA || len(cert.IssuerID) == 0 {
 			cert.CA = true
-			s.roots[cert.ID] = cert
+			s.roots = append(s.roots, cert)
 		} else {
 			s.certs = append(s.certs, cert)
 		}
@@ -230,7 +230,7 @@ type store struct {
 	keySize uint64
 	hash    crypto.Hash
 	certs   []Certificate
-	roots   map[string]Certificate
+	roots   []Certificate
 	issuers map[string]KeyPair
 }
 
@@ -257,8 +257,42 @@ func (s *store) init(overwrite bool) error {
 		return err
 	}
 	hash := s.hash.New()
+	err = s.initIssuers(hash, overwrite)
+	if err != nil {
+		return err
+	}
+	for _, cert := range s.certs {
+		crtPath := filepath.Join(s.dir, fmt.Sprintf("%s.crt", cert.ID))
+		keyPath := filepath.Join(s.dir, fmt.Sprintf("%s.key", cert.ID))
+		if exists(crtPath) && exists(keyPath) && !overwrite {
+			continue
+		}
+		var key crypto.Signer
+		if cert.key != nil {
+			key = cert.key
+		} else {
+			key, err = rsa.GenerateKey(rand.Reader, int(s.keySize))
+			if err != nil {
+				return err
+			}
+		}
+		derBytes, err := s.issuerCert(&cert, key)
+		if err != nil {
+			return err
+		}
+		if err = WriteCertificate(crtPath, derBytes); err != nil {
+			return err
+		}
+		if err = WriteKey(keyPath, key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *store) initIssuers(hash hash.Hash, overwrite bool) error {
+	var err error
 	for _, cert := range s.roots {
-		fmt.Println("issuer", cert.ID)
 		keyPath := filepath.Join(s.dir, fmt.Sprintf("%s.key", cert.ID))
 		crtFile := filepath.Join(s.dir, fmt.Sprintf("%s.crt", cert.ID))
 		if exists(crtFile) && !overwrite {
@@ -287,13 +321,12 @@ func (s *store) init(overwrite bool) error {
 			s.issuers[cert.ID] = KeyPair{Cert: cert.cert, Key: cert.key}
 			continue
 		}
-
 		template, err := newTemplate(&cert)
 		if err != nil {
 			return fmt.Errorf("failed to create certificate template: %w", err)
 		}
 
-		issuerKey := key
+		issuerKey := key // self signed by default
 		issuerCert := template
 		if cert.IssuerID != "" {
 			issuer, ok := s.issuers[cert.IssuerID]
@@ -303,11 +336,10 @@ func (s *store) init(overwrite bool) error {
 			issuerKey = issuer.Key
 			issuerCert = issuer.Cert
 		}
-		template.AuthorityKeyId, err = hashPublicKeyFromPrivateKey(hash, issuerKey)
+		template.AuthorityKeyId, err = hashPublicKey(hash, issuerKey)
 		if err != nil {
 			return err
 		}
-
 		derBytes, err := x509.CreateCertificate(
 			rand.Reader,
 			template,
@@ -326,50 +358,30 @@ func (s *store) init(overwrite bool) error {
 			return err
 		}
 	}
-
-	for _, cert := range s.certs {
-		crtPath := filepath.Join(s.dir, fmt.Sprintf("%s.crt", cert.ID))
-		keyPath := filepath.Join(s.dir, fmt.Sprintf("%s.key", cert.ID))
-		if exists(crtPath) && exists(keyPath) && !overwrite {
-			fmt.Println("already exists", crtPath)
-			continue
-		}
-		var key crypto.Signer
-		if cert.key != nil {
-			key = cert.key
-		} else {
-			key, err = rsa.GenerateKey(rand.Reader, int(s.keySize))
-			if err != nil {
-				return err
-			}
-		}
-
-		issuer, ok := s.issuers[cert.IssuerID]
-		if !ok {
-			return fmt.Errorf("could not find issuer %q", cert.IssuerID)
-		}
-		template, err := newTemplate(&cert)
-		if err != nil {
-			return err
-		}
-		derBytes, err := x509.CreateCertificate(
-			rand.Reader,
-			template,
-			issuer.Cert,
-			getPublicKeyPtr(key),
-			issuer.Key,
-		)
-		if err != nil {
-			return err
-		}
-		if err = WriteCertificate(crtPath, derBytes); err != nil {
-			return err
-		}
-		if err = WriteKey(keyPath, key); err != nil {
-			return err
-		}
-	}
 	return nil
+}
+
+func (s *store) issuerCert(cert *Certificate, key crypto.Signer) ([]byte, error) {
+	var err error
+	template, err := newTemplate(cert)
+	if err != nil {
+		return nil, err
+	}
+	issuer, ok := s.issuers[cert.IssuerID]
+	if !ok {
+		return nil, fmt.Errorf("could not find issuer %q", cert.IssuerID)
+	}
+	der, err := x509.CreateCertificate(
+		rand.Reader,
+		template,
+		issuer.Cert,
+		getPublicKeyPtr(key),
+		issuer.Key,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return der, nil
 }
 
 func newTemplate(cert *Certificate) (*x509.Certificate, error) {
@@ -396,24 +408,6 @@ func newTemplate(cert *Certificate) (*x509.Certificate, error) {
 	if !ok {
 		return nil, fmt.Errorf("could not parse serial number %q", cert.SerialNumber)
 	}
-	var (
-		usage x509.KeyUsage
-		ips   = make([]net.IP, 0, len(cert.IPs))
-		uris  = make([]*url.URL, 0, len(cert.URIs))
-	)
-	for _, u := range cert.KeyUsage {
-		usage |= u
-	}
-	for _, ip := range cert.IPs {
-		ips = append(ips, net.ParseIP(ip))
-	}
-	for _, uri := range cert.URIs {
-		u, err := url.Parse(uri)
-		if err != nil {
-			return nil, err
-		}
-		uris = append(uris, u)
-	}
 
 	signAlg := parseSignatureAlgorithm(cert.SignatureAlgorithm)
 	pkAlg := parsePublicKeyAlgorithm(cert.PublicKeyAlgorithm)
@@ -434,16 +428,27 @@ func newTemplate(cert *Certificate) (*x509.Certificate, error) {
 		Subject:               cert.subject(),
 		NotBefore:             notBefore,
 		NotAfter:              notAfter,
-		KeyUsage:              usage,
 		ExtKeyUsage:           cert.ExtKeyUsage,
 		DNSNames:              cert.DNS,
 		EmailAddresses:        cert.Email,
-		IPAddresses:           ips,
-		URIs:                  uris,
+		URIs:                  make([]*url.URL, 0, len(cert.URIs)),
 		OCSPServer:            cert.OCSP,
 		IssuingCertificateURL: cert.IssuingCertificateURL,
 		CRLDistributionPoints: cert.CRLDistributionPoints,
 		PolicyIdentifiers:     cert.PolicyIdentifiers,
+	}
+	for _, u := range cert.KeyUsage {
+		template.KeyUsage |= u
+	}
+	for _, ip := range cert.IPs {
+		template.IPAddresses = append(template.IPAddresses, net.ParseIP(ip))
+	}
+	for _, uri := range cert.URIs {
+		u, err := url.Parse(uri)
+		if err != nil {
+			return nil, err
+		}
+		template.URIs = append(template.URIs, u)
 	}
 	if cert.MaxPathLen != nil {
 		template.MaxPathLen = *cert.MaxPathLen
@@ -503,7 +508,7 @@ func getPublicKeyPtr(key crypto.Signer) crypto.PublicKey {
 	}
 }
 
-func hashPublicKeyFromPrivateKey(hash hash.Hash, key crypto.PrivateKey) ([]byte, error) {
+func hashPublicKey(hash hash.Hash, key crypto.PrivateKey) ([]byte, error) {
 	hash.Reset()
 	var pub crypto.PublicKey
 	switch k := key.(type) {

@@ -34,6 +34,7 @@ type config struct {
 	Store        string        `json:"store" hcl:"store"`
 	KeySize      uint64        `json:"keysize" hcl:"keysize"`
 	Certificates []Certificate `json:"certificates" hcl:"certificate,block"`
+	templates    []*x509.Certificate
 }
 
 type variable struct {
@@ -63,7 +64,7 @@ func ParseConfig(c *config, filename string, content []byte, inputList []string)
 	}
 
 	var vars = make(map[string]cty.Value)
-	input, err := parseVarInput(inputList, eval)
+	input, err := parseVarInputs(inputList, eval)
 	if err != nil {
 		return hcl.Diagnostics{{
 			Severity: hcl.DiagError,
@@ -185,6 +186,17 @@ func ParseConfig(c *config, filename string, content []byte, inputList []string)
 				}}
 			}
 			c.Certificates = append(c.Certificates, cert)
+			template, err := newTemplate(&cert)
+			if err != nil {
+				return hcl.Diagnostics{{
+					Severity: hcl.DiagError,
+					Summary:  "failed to create certificate template",
+					Detail:   err.Error(),
+					Subject:  &blk.DefRange,
+					Context:  &blk.TypeRange,
+				}}
+			}
+			c.templates = append(c.templates, template)
 
 		default:
 			return hcl.Diagnostics{{
@@ -240,44 +252,51 @@ func parseVariable(eval *hcl.EvalContext, block *hcl.Block) (*variable, hcl.Diag
 	return &v, nil
 }
 
-func parseVarInput(list []string, eval *hcl.EvalContext) (map[string]cty.Value, error) {
+func parseVarInputs(list []string, eval *hcl.EvalContext) (map[string]cty.Value, error) {
 	m := make(map[string]cty.Value)
 	for _, item := range list {
 		item = strings.TrimLeft(item, " \t")
 		i := strings.Index(item, "=")
-
 		v := item[i+1:]
 		k := item[:i]
-		switch v {
-		case "true", "false":
-			val, err := strconv.ParseBool(v)
-			if err != nil {
-				return nil, err
-			}
-			m[k] = cty.BoolVal(val)
-		default:
-			if v[0] == '[' {
-				expr, diags := hclsyntax.ParseExpression([]byte(v), "", hcl.InitialPos)
-				if diags.HasErrors() {
-					return nil, errors.New("failed to parse array syntax")
-				}
-				val, diags := expr.Value(eval)
-				if diags.HasErrors() {
-					return nil, errors.New("failed to parse array syntax")
-				}
-				m[k] = val
-			} else if v[0] >= 48 && v[0] <= 57 {
-				val, err := strconv.ParseInt(v, 10, 64)
-				if errors.Is(err, strconv.ErrSyntax) {
-					m[k] = cty.StringVal(v)
-				} else if err != nil {
-					return nil, err
-				}
-				m[k] = cty.NumberIntVal(val)
-			} else {
-				m[k] = cty.StringVal(v)
-			}
+		value, err := parseVar(v, eval)
+		if err != nil {
+			return nil, err
 		}
+		m[k] = value
 	}
 	return m, nil
+}
+
+func parseVar(v string, eval *hcl.EvalContext) (cty.Value, error) {
+	switch v {
+	case "true", "false":
+		val, err := strconv.ParseBool(v)
+		if err != nil {
+			return cty.NilVal, err
+		}
+		return cty.BoolVal(val), nil
+	default:
+		if v[0] == '[' {
+			expr, diags := hclsyntax.ParseExpression([]byte(v), "", hcl.InitialPos)
+			if diags.HasErrors() {
+				return cty.NilVal, errors.New("failed to parse array syntax")
+			}
+			val, diags := expr.Value(eval)
+			if diags.HasErrors() {
+				return cty.NilVal, errors.New("failed to parse array syntax")
+			}
+			return val, nil
+		} else if v[0] >= 48 && v[0] <= 57 {
+			val, err := strconv.ParseInt(v, 10, 64)
+			if errors.Is(err, strconv.ErrSyntax) {
+				return cty.StringVal(v), nil
+			} else if err != nil {
+				return cty.NilVal, err
+			}
+			return cty.NumberIntVal(val), nil
+		} else {
+			return cty.StringVal(v), nil
+		}
+	}
 }
