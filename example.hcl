@@ -89,11 +89,11 @@ certificate "alt_ca" {
 	# here, all other attributes in the certificate block will be ignored.
 	#
 	# Default: ""
-	cert_file = "testdata/pki/ca.crt"
+	cert_file = "testdata/pki0/ca.crt"
 	# key_file - read the private key from this file instead of generating one
 	#
 	# Default: ""
-	key_file = "testdata/pki/ca.key"
+	key_file = "testdata/pki0/ca.key"
 }
 
 certificate "intermediate" {
@@ -101,7 +101,7 @@ certificate "intermediate" {
 	# issuer.
 	#
 	# Default: ""
-	issuer = certificate.alt_ca.id
+	issuer = certificate.ca.id
 	# path_len - set the pathlen in the certificate
 	path_len      = 0
 	ca            = true

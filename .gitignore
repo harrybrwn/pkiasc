@@ -1,6 +1,4 @@
 testdata/store/
-testdata/gen.sh
-testdata/openssl.cnf
 
 # Test Data
 *.log
@@ -17,3 +15,4 @@ ca.srl
 ca.srl.old
 crlnumber
 gocoverage.txt
+test/

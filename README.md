@@ -1,6 +1,11 @@
 # pkiasc (PKI as Code)
 Manage TLS certificates with a declarative plaintext interface.
 
+## Install
+```
+go install gopkg.hrry.dev/pkiasc
+```
+
 ## Setup
 1. Write the configuration in `pki.hcl`. See [example.hcl](/example.hcl) for
 in-depth examples and documentation.
